@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fprime-cosmos"
+dynamic = ["version"]
+description = "F Prime / OpenC3 COSMOS: generates and installs a native COSMOS plugin from an F Prime dictionary"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "F Prime Community" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "fprime-gds>=4.4.0a4",
+    "requests>=2.25",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "build"]
+
+[project.scripts]
+fprime-to-cosmos = "fprime_cosmos.generate.__main__:main"
+fprime-cosmos = "fprime_cosmos.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/fprime-community/fprime-cosmos"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+fprime_cosmos = ["plugin/**/*"]
+
+[tool.setuptools_scm]
+fallback_version = "0.1.0.dev0"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "W", "C4", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
