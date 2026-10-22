@@ -179,7 +179,7 @@ def _channel_modifiers(channel: ChTemplate, item: CosmosItem) -> list[str]:
     return modifiers
 
 
-def _time_items(layout: WireLayout) -> list[str]:
+def _time_items(layout: WireLayout, time_conversion: str = TIME_CONVERSION) -> list[str]:
     base, context, seconds, useconds = TIME_ITEMS
     lines = [f"  APPEND_ITEM {base} {layout.time_base_bits} UINT {quote('F Prime time base')}"]
     lines.extend(f"    STATE {identifier(name)} {int(value)}" for name, value in layout.time_base_states.items())
@@ -189,7 +189,7 @@ def _time_items(layout: WireLayout) -> list[str]:
             f"  APPEND_ITEM {seconds} {TIME_SECONDS_BITS} UINT {quote('F Prime time seconds')}",
             f"  APPEND_ITEM {useconds} {TIME_USECONDS_BITS} UINT {quote('F Prime time microseconds')}",
             f"  ITEM {TIME_ITEM} 0 0 DERIVED {quote('F Prime time as Unix time (valid for TB_WORKSTATION_TIME)')}",
-            f"    READ_CONVERSION {TIME_CONVERSION} {seconds} {useconds}",
+            f"    READ_CONVERSION {time_conversion} {seconds} {useconds}",
         ]
     )
     return lines
@@ -221,13 +221,13 @@ def emit_commands(dictionary: FprimeDictionary) -> str:
     return "\n".join(blocks)
 
 
-def emit_channel(channel: ChTemplate, layout: WireLayout) -> list[str]:
+def emit_channel(channel: ChTemplate, layout: WireLayout, time_conversion: str = TIME_CONVERSION) -> list[str]:
     lines = [f"TELEMETRY {TARGET} {full_name(channel)} BIG_ENDIAN {quote(channel.get_ch_desc())}", "  SUBPACKET"]
     channel_id = CosmosItem(
         CHANNEL_ID_ITEM, layout.channel_id_bits, "UINT", "F Prime channel identifier", fprime_type="FwChanIdType"
     )
     lines.extend(_item_lines(channel_id, channel.get_id()))
-    lines.extend(_time_items(layout))
+    lines.extend(_time_items(layout, time_conversion))
     lines.extend(_value_items(channel.get_name(), channel, layout))
     return lines
 
@@ -262,7 +262,7 @@ def emit_channels(dictionary: FprimeDictionary) -> str:
     return "\n".join(blocks)
 
 
-def emit_packet(packet: PktTemplate, layout: WireLayout) -> list[str]:
+def emit_packet(packet: PktTemplate, layout: WireLayout, time_conversion: str = TIME_CONVERSION) -> list[str]:
     description = quote(f"F Prime packetized telemetry {packet.get_name()}")
     lines = [f"TELEMETRY {TARGET} {full_name(packet)} BIG_ENDIAN {description}"]
     descriptor = _descriptor_item(layout)
@@ -271,7 +271,7 @@ def emit_packet(packet: PktTemplate, layout: WireLayout) -> list[str]:
     )
     lines.extend(_item_lines(descriptor, layout.packetized_descriptor))
     lines.extend(_item_lines(packet_id, packet.get_id()))
-    lines.extend(_time_items(layout))
+    lines.extend(_time_items(layout, time_conversion))
     for channel in packet.get_ch_list():
         lines.extend(_value_items(full_name(channel), channel, layout))
     return lines

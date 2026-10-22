@@ -50,7 +50,7 @@ def test_authenticate_existing_password(client):
     client.authenticate()
     assert client.session.headers["Authorization"] == "tok"
     method, path, kwargs = client.session.calls[1]
-    assert (method, path, kwargs["data"]) == ("POST", "/auth/verify", {"password": "secret"})
+    assert (method, path, kwargs["data"]) == ("POST", "/auth/verify", {"token": "secret"})
     assert kwargs["params"] == {"scope": "OPS"}
 
 
@@ -58,6 +58,7 @@ def test_authenticate_sets_password_on_fresh_cosmos(client):
     client.session.responses = [FakeResponse(body={"result": False}), FakeResponse(text="tok")]
     client.authenticate()
     assert client.session.calls[1][1] == "/auth/set"
+    assert client.session.calls[1][2]["data"] == {"token": "secret"}
 
 
 def test_authenticate_requires_password():

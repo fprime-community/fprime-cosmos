@@ -1,0 +1,4546 @@
+{
+  "metadata" : {
+    "deploymentName" : "FPrimeApp.FPrimeDeployment",
+    "projectVersion" : "v4.3.0",
+    "frameworkVersion" : "v4.3.0",
+    "libraryVersions" : [
+    ],
+    "dictionarySpecVersion" : "1.0.0"
+  },
+  "typeDefinitions" : [
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Svc.RateLogic",
+      "representationType" : {
+        "name" : "I32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : true
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "SILENCED",
+          "value" : 0,
+          "annotation" : "No logic applied. Does not send group and freezes counter."
+        },
+        {
+          "name" : "EVERY_MAX",
+          "value" : 1,
+          "annotation" : "Send every MAX ticks between sends."
+        },
+        {
+          "name" : "ON_CHANGE_MIN",
+          "value" : 2,
+          "annotation" : "Send on updates after MIN ticks since last send."
+        },
+        {
+          "name" : "ON_CHANGE_MIN_OR_EVERY_MAX",
+          "value" : 3,
+          "annotation" : "Send on updates after MIN ticks since last send OR at MAX ticks between sends."
+        }
+      ],
+      "default" : "Svc.RateLogic.SILENCED",
+      "annotation" : "Enumeration for rate logic types for telemetry groups"
+    },
+    {
+      "kind" : "struct",
+      "qualifiedName" : "Svc.TlmPacketizer.GroupConfig",
+      "members" : {
+        "enabled" : {
+          "type" : {
+            "name" : "Fw.Enabled",
+            "kind" : "qualifiedIdentifier"
+          },
+          "index" : 0,
+          "annotation" : "Enable / Disable Telemetry Output"
+        },
+        "min" : {
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "index" : 3,
+          "annotation" : "Minimum Sched Ticks when in ON_CHANGE_MIN"
+        },
+        "max" : {
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "index" : 4,
+          "annotation" : "Maximum Sched Ticks when in EVERY_MAX"
+        },
+        "rateLogic" : {
+          "type" : {
+            "name" : "Svc.RateLogic",
+            "kind" : "qualifiedIdentifier"
+          },
+          "index" : 2,
+          "annotation" : "Rate Logic Configuration"
+        },
+        "forceEnabled" : {
+          "type" : {
+            "name" : "Fw.Enabled",
+            "kind" : "qualifiedIdentifier"
+          },
+          "index" : 1,
+          "annotation" : "Force Enable / Disable Telemetry Output"
+        }
+      },
+      "default" : {
+        "enabled" : "Fw.Enabled.DISABLED",
+        "min" : 0,
+        "max" : 0,
+        "rateLogic" : "Svc.RateLogic.SILENCED",
+        "forceEnabled" : "Fw.Enabled.DISABLED"
+      }
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "PlatformSizeType",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "underlyingType" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "annotation" : "The unsigned type of larger sizes internal to the software,\ne.g., memory buffer sizes, file sizes. Must be unsigned.\nSupplied by platform, overridable by project."
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwChanIdType",
+      "type" : {
+        "name" : "FwIdType",
+        "kind" : "qualifiedIdentifier"
+      },
+      "underlyingType" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "annotation" : "The type of a telemetry channel identifier"
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwIndexType",
+      "type" : {
+        "name" : "PlatformIndexType",
+        "kind" : "qualifiedIdentifier"
+      },
+      "underlyingType" : {
+        "name" : "I16",
+        "kind" : "integer",
+        "size" : 16,
+        "signed" : true
+      },
+      "annotation" : "The type of smaller indices internal to the software, used\nfor array indices, e.g., port indices. Must be signed."
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Svc.EventManager.Enabled",
+      "representationType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "ENABLED",
+          "value" : 0,
+          "annotation" : "Enabled state"
+        },
+        {
+          "name" : "DISABLED",
+          "value" : 1,
+          "annotation" : "Disabled state"
+        }
+      ],
+      "default" : "Svc.EventManager.Enabled.ENABLED",
+      "annotation" : "Enabled and disabled state"
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwOpcodeType",
+      "type" : {
+        "name" : "FwIdType",
+        "kind" : "qualifiedIdentifier"
+      },
+      "underlyingType" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "annotation" : "The type of a command opcode"
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "ComCfg.Pvn",
+      "representationType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "SPACE_PACKET_PROTOCOL",
+          "value" : 0,
+          "annotation" : "Fully Featured CCSDS Space Packet Protocol"
+        },
+        {
+          "name" : "ENCAPSULATION_PACKET_PROTOCOL",
+          "value" : 7,
+          "annotation" : "Bare-bones CCSDS Encapsulation Packet Protocol"
+        },
+        {
+          "name" : "INVALID_UNINITIALIZED",
+          "value" : 8,
+          "annotation" : "Anything equal or higher value is invalid and should not be used"
+        }
+      ],
+      "default" : "ComCfg.Pvn.INVALID_UNINITIALIZED",
+      "annotation" : "Packet Version Numbers are 3 bits with only 2 currently valid values"
+    },
+    {
+      "kind" : "struct",
+      "qualifiedName" : "Fw.TimeIntervalValue",
+      "members" : {
+        "seconds" : {
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "index" : 0,
+          "annotation" : "seconds portion of TimeInterval"
+        },
+        "useconds" : {
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "index" : 1,
+          "annotation" : "microseconds portion of TimeInterval"
+        }
+      },
+      "default" : {
+        "seconds" : 0,
+        "useconds" : 0
+      },
+      "annotation" : "Data structure for Time Interval"
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Svc.VersionType",
+      "representationType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "PROJECT",
+          "value" : 0,
+          "annotation" : "project version"
+        },
+        {
+          "name" : "FRAMEWORK",
+          "value" : 1,
+          "annotation" : "framework version"
+        },
+        {
+          "name" : "LIBRARY",
+          "value" : 2,
+          "annotation" : "library version"
+        },
+        {
+          "name" : "CUSTOM",
+          "value" : 3,
+          "annotation" : "custom version"
+        },
+        {
+          "name" : "ALL",
+          "value" : 4,
+          "annotation" : "all above versions"
+        }
+      ],
+      "default" : "Svc.VersionType.PROJECT",
+      "annotation" : "An enumeration for Version Type"
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Svc.Ccsds.Tfvn",
+      "representationType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "TM_TC",
+          "value" : 0,
+          "annotation" : "Telemetry and Telecommand SDLs"
+        },
+        {
+          "name" : "AOS",
+          "value" : 1,
+          "annotation" : "Advanced Orbiting Systems SDL"
+        },
+        {
+          "name" : "PROX_ONE",
+          "value" : 2,
+          "annotation" : "Proximity-1 SDL"
+        },
+        {
+          "name" : "USLP",
+          "value" : 3,
+          "annotation" : "Unified Space Data Link Protocol"
+        },
+        {
+          "name" : "INVALID_UNINITIALIZED",
+          "value" : 4,
+          "annotation" : "Anything equal or higher value is invalid and should not be used"
+        }
+      ],
+      "default" : "Svc.Ccsds.Tfvn.INVALID_UNINITIALIZED",
+      "annotation" : "Transfer Frame Version Numbers are 4 bits long\nCCSDS References add 1 to the binary value when counting versions in english (e.g. TM & TC are \"version 1\" but 0b00)\nUntil the release of USLP, TFVN were 2 bits long\nWith the addition of USLP two bits were added to the trailing end that serve as the 2 most significant bits\n(i.e. on the wire USLP sends 0b1100)\nSee section 3.2.2.2 of USLP Overview (CCSDS 700.1-G-1),\nsection 4.1.2.2.2 of AOS (CCSDS 732.0-B-5),\nsection 4.3.2 of Space Data Link Protocol Summary (CCSDS 130.2-G-3),\n& table 3-1 in Overview of Space Comms Protocols (CCSDS 130.0-G-4)"
+    },
+    {
+      "kind" : "struct",
+      "qualifiedName" : "Svc.CompressionMetadata",
+      "members" : {
+        "algorithm" : {
+          "type" : {
+            "name" : "Svc.CompressionAlgorithm",
+            "kind" : "qualifiedIdentifier"
+          },
+          "index" : 0
+        }
+      },
+      "default" : {
+        "algorithm" : "Svc.CompressionAlgorithm.UNCOMPRESSED"
+      }
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Fw.DpState",
+      "representationType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "UNTRANSMITTED",
+          "value" : 0,
+          "annotation" : "The untransmitted state"
+        },
+        {
+          "name" : "PARTIAL",
+          "value" : 1,
+          "annotation" : "The partially transmitted state\nA data product is in this state from the start of transmission\nuntil transmission is complete."
+        },
+        {
+          "name" : "TRANSMITTED",
+          "value" : 2,
+          "annotation" : "The transmitted state"
+        }
+      ],
+      "default" : "Fw.DpState.UNTRANSMITTED"
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Svc.Ccsds.EppLengthOfLength",
+      "representationType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "Zero",
+          "value" : 0,
+          "annotation" : "0b00 - Single Byte Idle Packet"
+        },
+        {
+          "name" : "One",
+          "value" : 1,
+          "annotation" : "0b01 - Two Byte Header"
+        },
+        {
+          "name" : "Two",
+          "value" : 2,
+          "annotation" : "0b10 - Four Byte Header"
+        },
+        {
+          "name" : "Four",
+          "value" : 3,
+          "annotation" : "0b11 - Eight Byte Header"
+        }
+      ],
+      "default" : "Svc.Ccsds.EppLengthOfLength.Zero"
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwDpPriorityType",
+      "type" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "underlyingType" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "annotation" : "The type of a data product priority"
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Svc.Ccsds.EppProtocolId",
+      "representationType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "Idle",
+          "value" : 0,
+          "annotation" : "0b000 - Encapsulation Idle Packet"
+        },
+        {
+          "name" : "Extended",
+          "value" : 6,
+          "annotation" : "0b110 - Extended Protocol ID Field Driven"
+        },
+        {
+          "name" : "MissionSpecific",
+          "value" : 7,
+          "annotation" : "Mission-specific"
+        }
+      ],
+      "default" : "Svc.Ccsds.EppProtocolId.MissionSpecific",
+      "annotation" : "Protocol IDs for EPP encapsulation packets per CCSDS 133.1-B-3 Section 4.1.2.3.3"
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "PlatformIndexType",
+      "type" : {
+        "name" : "I16",
+        "kind" : "integer",
+        "size" : 16,
+        "signed" : true
+      },
+      "underlyingType" : {
+        "name" : "I16",
+        "kind" : "integer",
+        "size" : 16,
+        "signed" : true
+      },
+      "annotation" : "The type of smaller indices internal to the software, used\nfor array indices, e.g., port indices. Must be signed."
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Svc.EventManager.FilterSeverity",
+      "representationType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "WARNING_HI",
+          "value" : 0,
+          "annotation" : "Filter WARNING_HI events"
+        },
+        {
+          "name" : "WARNING_LO",
+          "value" : 1,
+          "annotation" : "Filter WARNING_LO events"
+        },
+        {
+          "name" : "COMMAND",
+          "value" : 2,
+          "annotation" : "Filter COMMAND events"
+        },
+        {
+          "name" : "ACTIVITY_HI",
+          "value" : 3,
+          "annotation" : "Filter ACTIVITY_HI events"
+        },
+        {
+          "name" : "ACTIVITY_LO",
+          "value" : 4,
+          "annotation" : "Filter ACTIVITY_LO events"
+        },
+        {
+          "name" : "DIAGNOSTIC",
+          "value" : 5,
+          "annotation" : "Filter DIAGNOSTIC events"
+        }
+      ],
+      "default" : "Svc.EventManager.FilterSeverity.WARNING_HI",
+      "annotation" : "Severity level for event filtering\nSimilar to Fw::LogSeverity, but no FATAL event"
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Fw.DpCfg.ProcType",
+      "representationType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "PROC_TYPE_NONE",
+          "value" : 0,
+          "annotation" : "No Processing"
+        },
+        {
+          "name" : "PROC_TYPE_ZLIB_DEFLATE",
+          "value" : 1,
+          "annotation" : "Processing type 0"
+        },
+        {
+          "name" : "PROC_TYPE_ONE",
+          "value" : 2,
+          "annotation" : "Processing type 1"
+        },
+        {
+          "name" : "PROC_TYPE_TWO",
+          "value" : 4,
+          "annotation" : "Processing type 2"
+        }
+      ],
+      "default" : "Fw.DpCfg.ProcType.PROC_TYPE_NONE",
+      "annotation" : "A bit mask for selecting the type of processing to perform on\na container before writing it to disk."
+    },
+    {
+      "kind" : "array",
+      "qualifiedName" : "Svc.TlmPacketizer.GroupConfigs",
+      "size" : 4,
+      "elementType" : {
+        "name" : "Svc.TlmPacketizer.GroupConfig",
+        "kind" : "qualifiedIdentifier"
+      },
+      "default" : [
+        {
+          "enabled" : "Fw.Enabled.DISABLED",
+          "min" : 0,
+          "max" : 0,
+          "rateLogic" : "Svc.RateLogic.SILENCED",
+          "forceEnabled" : "Fw.Enabled.DISABLED"
+        },
+        {
+          "enabled" : "Fw.Enabled.DISABLED",
+          "min" : 0,
+          "max" : 0,
+          "rateLogic" : "Svc.RateLogic.SILENCED",
+          "forceEnabled" : "Fw.Enabled.DISABLED"
+        },
+        {
+          "enabled" : "Fw.Enabled.DISABLED",
+          "min" : 0,
+          "max" : 0,
+          "rateLogic" : "Svc.RateLogic.SILENCED",
+          "forceEnabled" : "Fw.Enabled.DISABLED"
+        },
+        {
+          "enabled" : "Fw.Enabled.DISABLED",
+          "min" : 0,
+          "max" : 0,
+          "rateLogic" : "Svc.RateLogic.SILENCED",
+          "forceEnabled" : "Fw.Enabled.DISABLED"
+        }
+      ]
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "ComCfg.Apid",
+      "representationType" : {
+        "name" : "U16",
+        "kind" : "integer",
+        "size" : 16,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "FW_PACKET_COMMAND",
+          "value" : 0,
+          "annotation" : "Command packet type - incoming"
+        },
+        {
+          "name" : "FW_PACKET_TELEM",
+          "value" : 1,
+          "annotation" : "Telemetry packet type - outgoing"
+        },
+        {
+          "name" : "FW_PACKET_LOG",
+          "value" : 2,
+          "annotation" : "Log type - outgoing"
+        },
+        {
+          "name" : "FW_PACKET_FILE",
+          "value" : 3,
+          "annotation" : "File type - incoming and outgoing"
+        },
+        {
+          "name" : "FW_PACKET_PACKETIZED_TLM",
+          "value" : 32,
+          "annotation" : "Packetized telemetry packet type"
+        },
+        {
+          "name" : "FW_PACKET_DP",
+          "value" : 5,
+          "annotation" : "Data Product packet type"
+        },
+        {
+          "name" : "FW_PACKET_IDLE",
+          "value" : 6,
+          "annotation" : "F Prime idle"
+        },
+        {
+          "name" : "FW_PACKET_HAND",
+          "value" : 254,
+          "annotation" : "F Prime handshake"
+        },
+        {
+          "name" : "FW_PACKET_UNKNOWN",
+          "value" : 255,
+          "annotation" : "F Prime unknown packet"
+        },
+        {
+          "name" : "CFS_SCH_TICK",
+          "value" : 144,
+          "annotation" : "cFS scheduler (SCH) tick message driving the rate groups"
+        },
+        {
+          "name" : "SPP_IDLE_PACKET",
+          "value" : 2047,
+          "annotation" : "Per Space Packet Standard, all 1s (11bits) is reserved for Idle Packets"
+        },
+        {
+          "name" : "INVALID_UNINITIALIZED",
+          "value" : 2048,
+          "annotation" : "Anything equal or higher value is invalid and should not be used"
+        }
+      ],
+      "default" : "ComCfg.Apid.INVALID_UNINITIALIZED",
+      "annotation" : "APIDs are 11 bits in the Space Packet protocol, so we use U16. Max value 7FF"
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwTimeContextStoreType",
+      "type" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "underlyingType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "annotation" : "The type used to serialize a time context value"
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Svc.VersionEnabled",
+      "representationType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "DISABLED",
+          "value" : 0,
+          "annotation" : "verbosity disabled"
+        },
+        {
+          "name" : "ENABLED",
+          "value" : 1,
+          "annotation" : "verbosity enabled"
+        }
+      ],
+      "default" : "Svc.VersionEnabled.DISABLED",
+      "annotation" : "Tracks versions for project, framework and user defined versions etc"
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Fw.TimeComparison",
+      "representationType" : {
+        "name" : "I32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : true
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "LT",
+          "value" : -1
+        },
+        {
+          "name" : "EQ",
+          "value" : 0
+        },
+        {
+          "name" : "GT",
+          "value" : 1
+        },
+        {
+          "name" : "INCOMPARABLE",
+          "value" : 2
+        }
+      ],
+      "default" : "Fw.TimeComparison.LT"
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Svc.VersionCfg.VersionEnum",
+      "representationType" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "PROJECT_VERSION_00",
+          "value" : 0,
+          "annotation" : "Entry 0"
+        },
+        {
+          "name" : "PROJECT_VERSION_01",
+          "value" : 1,
+          "annotation" : "Entry 1"
+        },
+        {
+          "name" : "PROJECT_VERSION_02",
+          "value" : 2,
+          "annotation" : "Entry 2"
+        },
+        {
+          "name" : "PROJECT_VERSION_03",
+          "value" : 3,
+          "annotation" : "Entry 3"
+        },
+        {
+          "name" : "PROJECT_VERSION_04",
+          "value" : 4,
+          "annotation" : "Entry 4"
+        },
+        {
+          "name" : "PROJECT_VERSION_05",
+          "value" : 5,
+          "annotation" : "Entry 5"
+        },
+        {
+          "name" : "PROJECT_VERSION_06",
+          "value" : 6,
+          "annotation" : "Entry 6"
+        },
+        {
+          "name" : "PROJECT_VERSION_07",
+          "value" : 7,
+          "annotation" : "Entry 7"
+        },
+        {
+          "name" : "PROJECT_VERSION_08",
+          "value" : 8,
+          "annotation" : "Entry 8"
+        },
+        {
+          "name" : "PROJECT_VERSION_09",
+          "value" : 9,
+          "annotation" : "Entry 9"
+        }
+      ],
+      "default" : "Svc.VersionCfg.VersionEnum.PROJECT_VERSION_00",
+      "annotation" : "Define a set of Version entries on a project-specific\nbasis."
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwDpIdType",
+      "type" : {
+        "name" : "FwIdType",
+        "kind" : "qualifiedIdentifier"
+      },
+      "underlyingType" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "annotation" : "The type of a data product identifier"
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Fw.CmdResponse",
+      "representationType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "OK",
+          "value" : 0,
+          "annotation" : "Command successfully executed"
+        },
+        {
+          "name" : "INVALID_OPCODE",
+          "value" : 1,
+          "annotation" : "Invalid opcode dispatched"
+        },
+        {
+          "name" : "VALIDATION_ERROR",
+          "value" : 2,
+          "annotation" : "Command failed validation"
+        },
+        {
+          "name" : "FORMAT_ERROR",
+          "value" : 3,
+          "annotation" : "Command failed to deserialize"
+        },
+        {
+          "name" : "EXECUTION_ERROR",
+          "value" : 4,
+          "annotation" : "Command had execution error"
+        },
+        {
+          "name" : "BUSY",
+          "value" : 5,
+          "annotation" : "Component busy"
+        }
+      ],
+      "default" : "Fw.CmdResponse.OK",
+      "annotation" : "Enum representing a command response"
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Svc.CompressionAlgorithm",
+      "representationType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "UNCOMPRESSED",
+          "value" : 0
+        },
+        {
+          "name" : "ZLIB_DEFLATE",
+          "value" : 1
+        }
+      ],
+      "default" : "Svc.CompressionAlgorithm.UNCOMPRESSED"
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwIdType",
+      "type" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "underlyingType" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "annotation" : "The id type."
+    },
+    {
+      "kind" : "array",
+      "qualifiedName" : "Svc.TlmPacketizer.SectionConfigs",
+      "size" : 2,
+      "elementType" : {
+        "name" : "Svc.TlmPacketizer.GroupConfigs",
+        "kind" : "qualifiedIdentifier"
+      },
+      "default" : [
+        [
+          {
+            "enabled" : "Fw.Enabled.ENABLED",
+            "min" : 0,
+            "max" : 0,
+            "rateLogic" : "Svc.RateLogic.ON_CHANGE_MIN",
+            "forceEnabled" : "Fw.Enabled.DISABLED"
+          },
+          {
+            "enabled" : "Fw.Enabled.ENABLED",
+            "min" : 0,
+            "max" : 0,
+            "rateLogic" : "Svc.RateLogic.ON_CHANGE_MIN",
+            "forceEnabled" : "Fw.Enabled.DISABLED"
+          },
+          {
+            "enabled" : "Fw.Enabled.ENABLED",
+            "min" : 0,
+            "max" : 0,
+            "rateLogic" : "Svc.RateLogic.ON_CHANGE_MIN",
+            "forceEnabled" : "Fw.Enabled.DISABLED"
+          },
+          {
+            "enabled" : "Fw.Enabled.ENABLED",
+            "min" : 0,
+            "max" : 0,
+            "rateLogic" : "Svc.RateLogic.ON_CHANGE_MIN",
+            "forceEnabled" : "Fw.Enabled.DISABLED"
+          }
+        ],
+        [
+          {
+            "enabled" : "Fw.Enabled.ENABLED",
+            "min" : 0,
+            "max" : 0,
+            "rateLogic" : "Svc.RateLogic.ON_CHANGE_MIN",
+            "forceEnabled" : "Fw.Enabled.DISABLED"
+          },
+          {
+            "enabled" : "Fw.Enabled.ENABLED",
+            "min" : 0,
+            "max" : 0,
+            "rateLogic" : "Svc.RateLogic.ON_CHANGE_MIN",
+            "forceEnabled" : "Fw.Enabled.DISABLED"
+          },
+          {
+            "enabled" : "Fw.Enabled.ENABLED",
+            "min" : 0,
+            "max" : 0,
+            "rateLogic" : "Svc.RateLogic.ON_CHANGE_MIN",
+            "forceEnabled" : "Fw.Enabled.DISABLED"
+          },
+          {
+            "enabled" : "Fw.Enabled.ENABLED",
+            "min" : 0,
+            "max" : 0,
+            "rateLogic" : "Svc.RateLogic.ON_CHANGE_MIN",
+            "forceEnabled" : "Fw.Enabled.DISABLED"
+          }
+        ]
+      ]
+    },
+    {
+      "kind" : "array",
+      "qualifiedName" : "Svc.TlmPacketizer.SectionEnabled",
+      "size" : 2,
+      "elementType" : {
+        "name" : "Fw.Enabled",
+        "kind" : "qualifiedIdentifier"
+      },
+      "default" : [
+        "Fw.Enabled.ENABLED",
+        "Fw.Enabled.ENABLED"
+      ]
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwTlmPacketizeIdType",
+      "type" : {
+        "name" : "U16",
+        "kind" : "integer",
+        "size" : 16,
+        "signed" : false
+      },
+      "underlyingType" : {
+        "name" : "U16",
+        "kind" : "integer",
+        "size" : 16,
+        "signed" : false
+      },
+      "annotation" : "The type of a telemetry packet identifier"
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Svc.TelemetrySection",
+      "representationType" : {
+        "name" : "I32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : true
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "REALTIME",
+          "value" : 0,
+          "annotation" : "OPTIONAL: realtime telemetry downlink through communication stack"
+        },
+        {
+          "name" : "RECORDED",
+          "value" : 1,
+          "annotation" : "OPTIONAL: recorded telemetry stored on disk for later retrieval"
+        },
+        {
+          "name" : "NUM_SECTIONS",
+          "value" : 2,
+          "annotation" : "REQUIRED: Counter, leave as last element."
+        }
+      ],
+      "default" : "Svc.TelemetrySection.REALTIME",
+      "annotation" : "Configurable enum supporting multiple resampled telemetry sections\nEach section creates output indices for each telemetry group"
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Svc.Fpy.SerialPortIndex",
+      "representationType" : {
+        "name" : "I16",
+        "kind" : "integer",
+        "size" : 16,
+        "signed" : true
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "EXAMPLE_PORT_0",
+          "value" : 0,
+          "annotation" : "Example serial port 0 - rename to application-specific name (e.g., TIME_SYNC_PORT)"
+        },
+        {
+          "name" : "EXAMPLE_PORT_1",
+          "value" : 1,
+          "annotation" : "Example serial port 1 - rename to application-specific name (e.g., SENSOR_DATA_PORT)"
+        },
+        {
+          "name" : "EXAMPLE_PORT_2",
+          "value" : 2,
+          "annotation" : "Example serial port 2 - rename to application-specific name"
+        },
+        {
+          "name" : "EXAMPLE_PORT_3",
+          "value" : 3,
+          "annotation" : "Example serial port 3 - rename to application-specific name"
+        },
+        {
+          "name" : "EXAMPLE_PORT_4",
+          "value" : 4,
+          "annotation" : "Example serial port 4 - rename to application-specific name"
+        },
+        {
+          "name" : "MAX_SERIAL_PORTS",
+          "value" : 5,
+          "annotation" : "REQUIRED: Maximum number of serial ports. This sentinel value MUST be named"
+        }
+      ],
+      "default" : "Svc.Fpy.SerialPortIndex.EXAMPLE_PORT_0",
+      "annotation" : "Serial port indices for FpySequencer serialOut port array.\nMAX_SERIAL_PORTS must be defined with this exact name for Fpy compiler bounds checking."
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwSizeType",
+      "type" : {
+        "name" : "PlatformSizeType",
+        "kind" : "qualifiedIdentifier"
+      },
+      "underlyingType" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "annotation" : "The unsigned type of larger sizes internal to the software,\ne.g., memory buffer sizes, file sizes. Must be unsigned."
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "TimeBase",
+      "representationType" : {
+        "name" : "U16",
+        "kind" : "integer",
+        "size" : 16,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "TB_NONE",
+          "value" : 0,
+          "annotation" : "No time base has been established (Required)"
+        },
+        {
+          "name" : "TB_PROC_TIME",
+          "value" : 1,
+          "annotation" : "Indicates time is processor cycle time. Not tied to external time"
+        },
+        {
+          "name" : "TB_WORKSTATION_TIME",
+          "value" : 2,
+          "annotation" : "Time as reported on workstation where software is running. For testing. (Required)"
+        },
+        {
+          "name" : "TB_SC_TIME",
+          "value" : 3,
+          "annotation" : "Time as reported by the spacecraft clock."
+        },
+        {
+          "name" : "TB_DONT_CARE",
+          "value" : 65535,
+          "annotation" : "Don't care value for sequences. If FwTimeBaseStoreType is changed, value should be changed (Required)"
+        }
+      ],
+      "default" : "TimeBase.TB_NONE",
+      "annotation" : "Define enumeration for Time base types"
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwSizeStoreType",
+      "type" : {
+        "name" : "U16",
+        "kind" : "integer",
+        "size" : 16,
+        "signed" : false
+      },
+      "underlyingType" : {
+        "name" : "U16",
+        "kind" : "integer",
+        "size" : 16,
+        "signed" : false
+      },
+      "annotation" : "The type used to serialize a size value"
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Svc.VersionStatus",
+      "representationType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "OK",
+          "value" : 0,
+          "annotation" : "Version was good"
+        },
+        {
+          "name" : "FAILURE",
+          "value" : 1,
+          "annotation" : "Failure to get version"
+        }
+      ],
+      "default" : "Svc.VersionStatus.OK",
+      "annotation" : "An enumeration for version status"
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwPacketDescriptorType",
+      "type" : {
+        "name" : "U16",
+        "kind" : "integer",
+        "size" : 16,
+        "signed" : false
+      },
+      "underlyingType" : {
+        "name" : "U16",
+        "kind" : "integer",
+        "size" : 16,
+        "signed" : false
+      },
+      "annotation" : "The width of packet descriptors when they are serialized by the framework"
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Os.RawTimeStatus",
+      "representationType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "OP_OK",
+          "value" : 0,
+          "annotation" : "Operation was successful"
+        },
+        {
+          "name" : "OP_OVERFLOW",
+          "value" : 1,
+          "annotation" : "Operation result caused an overflow"
+        },
+        {
+          "name" : "INVALID_PARAMS",
+          "value" : 2,
+          "annotation" : "Parameters invalid for current platform"
+        },
+        {
+          "name" : "NOT_SUPPORTED",
+          "value" : 3,
+          "annotation" : "RawTime feature is not supported"
+        },
+        {
+          "name" : "OTHER_ERROR",
+          "value" : 4,
+          "annotation" : "All other errors"
+        }
+      ],
+      "default" : "Os.RawTimeStatus.OP_OK",
+      "annotation" : "FPP shadow-enum representing Os::RawTime::Status"
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Fw.DeserialStatus",
+      "representationType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "OK",
+          "value" : 0
+        },
+        {
+          "name" : "BUFFER_EMPTY",
+          "value" : 3,
+          "annotation" : "Deserialization buffer was empty when trying to read data"
+        },
+        {
+          "name" : "FORMAT_ERROR",
+          "value" : 4,
+          "annotation" : "Deserialization data had incorrect values (unexpected data types)"
+        },
+        {
+          "name" : "SIZE_MISMATCH",
+          "value" : 5,
+          "annotation" : "Data was left in in the buffer, but not enough to deserialize"
+        },
+        {
+          "name" : "TYPE_MISMATCH",
+          "value" : 6,
+          "annotation" : "Deserialized type ID didn't match"
+        }
+      ],
+      "default" : "Fw.DeserialStatus.OK",
+      "annotation" : "Deserialization status"
+    },
+    {
+      "kind" : "struct",
+      "qualifiedName" : "Fw.TimeValue",
+      "members" : {
+        "timeBase" : {
+          "type" : {
+            "name" : "TimeBase",
+            "kind" : "qualifiedIdentifier"
+          },
+          "index" : 0,
+          "annotation" : "basis of time (defined by system)"
+        },
+        "timeContext" : {
+          "type" : {
+            "name" : "FwTimeContextStoreType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "index" : 1,
+          "annotation" : "user settable value. Could be reboot count, node, etc"
+        },
+        "seconds" : {
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "index" : 2,
+          "annotation" : "seconds portion of Time"
+        },
+        "useconds" : {
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "index" : 3,
+          "annotation" : "microseconds portion of Time"
+        }
+      },
+      "default" : {
+        "timeBase" : "TimeBase.TB_NONE",
+        "timeContext" : 0,
+        "seconds" : 0,
+        "useconds" : 0
+      },
+      "annotation" : "Data structure for Time"
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Fw.LogSeverity",
+      "representationType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "FATAL",
+          "value" : 1,
+          "annotation" : "A fatal non-recoverable event"
+        },
+        {
+          "name" : "WARNING_HI",
+          "value" : 2,
+          "annotation" : "A serious but recoverable event"
+        },
+        {
+          "name" : "WARNING_LO",
+          "value" : 3,
+          "annotation" : "A less serious but recoverable event"
+        },
+        {
+          "name" : "COMMAND",
+          "value" : 4,
+          "annotation" : "An activity related to commanding"
+        },
+        {
+          "name" : "ACTIVITY_HI",
+          "value" : 5,
+          "annotation" : "Important informational events"
+        },
+        {
+          "name" : "ACTIVITY_LO",
+          "value" : 6,
+          "annotation" : "Less important informational events"
+        },
+        {
+          "name" : "DIAGNOSTIC",
+          "value" : 7,
+          "annotation" : "Software diagnostic events"
+        }
+      ],
+      "default" : "Fw.LogSeverity.FATAL",
+      "annotation" : "Enum representing event severity"
+    },
+    {
+      "kind" : "struct",
+      "qualifiedName" : "Svc.CustomVersionDb",
+      "members" : {
+        "version_enum" : {
+          "type" : {
+            "name" : "Svc.VersionCfg.VersionEnum",
+            "kind" : "qualifiedIdentifier"
+          },
+          "index" : 0,
+          "annotation" : "enumeration/name of the custom version"
+        },
+        "version_value" : {
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 80
+          },
+          "index" : 1,
+          "annotation" : "string containing custom version"
+        },
+        "version_status" : {
+          "type" : {
+            "name" : "Svc.VersionStatus",
+            "kind" : "qualifiedIdentifier"
+          },
+          "index" : 2,
+          "annotation" : "status of the custom version"
+        }
+      },
+      "default" : {
+        "version_enum" : "Svc.VersionCfg.VersionEnum.PROJECT_VERSION_00",
+        "version_value" : "",
+        "version_status" : "Svc.VersionStatus.OK"
+      },
+      "annotation" : "Data Structure for custom version Tlm"
+    },
+    {
+      "kind" : "enum",
+      "qualifiedName" : "Fw.Enabled",
+      "representationType" : {
+        "name" : "U8",
+        "kind" : "integer",
+        "size" : 8,
+        "signed" : false
+      },
+      "enumeratedConstants" : [
+        {
+          "name" : "DISABLED",
+          "value" : 0,
+          "annotation" : "Disabled state"
+        },
+        {
+          "name" : "ENABLED",
+          "value" : 1,
+          "annotation" : "Enabled state"
+        }
+      ],
+      "default" : "Fw.Enabled.DISABLED",
+      "annotation" : "Enabled and disabled states"
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwTimeBaseStoreType",
+      "type" : {
+        "name" : "U16",
+        "kind" : "integer",
+        "size" : 16,
+        "signed" : false
+      },
+      "underlyingType" : {
+        "name" : "U16",
+        "kind" : "integer",
+        "size" : 16,
+        "signed" : false
+      },
+      "annotation" : "The type used to serialize a time base value"
+    },
+    {
+      "kind" : "alias",
+      "qualifiedName" : "FwEventIdType",
+      "type" : {
+        "name" : "FwIdType",
+        "kind" : "qualifiedIdentifier"
+      },
+      "underlyingType" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "annotation" : "The type of an event identifier"
+    }
+  ],
+  "constants" : [
+    {
+      "kind" : "constant",
+      "qualifiedName" : "Svc.Fpy.MAX_STACK_SIZE",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "value" : 65535,
+      "annotation" : "the maximum number of bytes in a stack"
+    },
+    {
+      "kind" : "constant",
+      "qualifiedName" : "Svc.Fpy.DEFAULT_SEQ_BASE_DIR",
+      "type" : {
+        "name" : "string",
+        "kind" : "string",
+        "size" : 256
+      },
+      "value" : "",
+      "annotation" : "the default value of the SEQ_BASE_DIR parameter. suffixed to\nthe input sequence file path before resolution occurs following\nthe rules of Os::File::open. trailing slash optional"
+    },
+    {
+      "kind" : "constant",
+      "qualifiedName" : "Svc.Fpy.MAX_SEQUENCE_STATEMENT_COUNT",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "value" : 2048,
+      "annotation" : "The maximum number of statements a sequence can have"
+    },
+    {
+      "kind" : "constant",
+      "qualifiedName" : "Fw.DpCfg.CONTAINER_USER_DATA_SIZE",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "value" : 32,
+      "annotation" : "The size in bytes of the user-configurable data in the container\npacket header"
+    },
+    {
+      "kind" : "constant",
+      "qualifiedName" : "FW_SERIALIZE_FALSE_VALUE",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "value" : 0,
+      "annotation" : "Value encoded during serialization for boolean false"
+    },
+    {
+      "kind" : "constant",
+      "qualifiedName" : "Svc.MAX_CONFIGURABLE_TLMPACKETIZER_GROUP",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "value" : 3,
+      "annotation" : "Greatest packet group"
+    },
+    {
+      "kind" : "constant",
+      "qualifiedName" : "AssertFatalAdapterEventFileSize",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "value" : 240,
+      "annotation" : "The size of a file name in an AssertFatalAdapter event (leading-truncation)\nNote: File names in assertion failures are also truncated by\nthe constants FwAssertTextSize (in this file) and FW_LOG_STRING_MAX_SIZE (set\nin FW_LOG_STRING_MAX_SIZE)\nSet much smaller than FwAssertTextSize so there's space for time stamp/assert\narguments in log message"
+    },
+    {
+      "kind" : "constant",
+      "qualifiedName" : "FileNameStringSize",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "value" : 240,
+      "annotation" : "The size of a file name string"
+    },
+    {
+      "kind" : "constant",
+      "qualifiedName" : "ComCfg.TmFrameFixedSize",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "value" : 1024,
+      "annotation" : "Fixed size of CCSDS TM frames"
+    },
+    {
+      "kind" : "constant",
+      "qualifiedName" : "FW_SERIALIZE_TRUE_VALUE",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "value" : 255,
+      "annotation" : "Value encoded during serialization for boolean true"
+    },
+    {
+      "kind" : "constant",
+      "qualifiedName" : "Svc.NUM_CONFIGURABLE_TLMPACKETIZER_GROUPS",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "value" : 4
+    },
+    {
+      "kind" : "constant",
+      "qualifiedName" : "Svc.Fpy.MAX_DIRECTIVE_SIZE",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "value" : 2048,
+      "annotation" : "the maximum number of bytes in a directive"
+    },
+    {
+      "kind" : "constant",
+      "qualifiedName" : "FW_FIXED_LENGTH_STRING_SIZE",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "value" : 256,
+      "annotation" : "Configuration for Fw::String\nNote: FPrimeBasicTypes.hpp needs to be updated to sync enum"
+    },
+    {
+      "kind" : "constant",
+      "qualifiedName" : "ComCfg.FprimeCommandFunctionCode",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "value" : 0,
+      "annotation" : "Function code carried in the cFS command secondary header of F Prime passthrough commands"
+    },
+    {
+      "kind" : "constant",
+      "qualifiedName" : "ComCfg.SpacecraftId",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "value" : 68,
+      "annotation" : "Spacecraft ID (10 bits) for CCSDS Data Link layer"
+    },
+    {
+      "kind" : "constant",
+      "qualifiedName" : "Svc.Fpy.MAX_SEQUENCE_ARG_COUNT",
+      "type" : {
+        "name" : "U64",
+        "kind" : "integer",
+        "size" : 64,
+        "signed" : false
+      },
+      "value" : 16,
+      "annotation" : "The maximum number of arguments a sequence can have"
+    }
+  ],
+  "commands" : [
+    {
+      "name" : "CfsCore.cmdDisp.CMD_NO_OP",
+      "commandKind" : "async",
+      "opcode" : 16777216,
+      "formalParams" : [
+      ],
+      "queueFullBehavior" : "assert",
+      "annotation" : "No-op command"
+    },
+    {
+      "name" : "CfsCore.cmdDisp.CMD_NO_OP_STRING",
+      "commandKind" : "async",
+      "opcode" : 16777217,
+      "formalParams" : [
+        {
+          "name" : "arg1",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 40
+          },
+          "ref" : false,
+          "annotation" : "The String command argument"
+        }
+      ],
+      "queueFullBehavior" : "assert",
+      "annotation" : "No-op string command"
+    },
+    {
+      "name" : "CfsCore.cmdDisp.CMD_TEST_CMD_1",
+      "commandKind" : "async",
+      "opcode" : 16777218,
+      "formalParams" : [
+        {
+          "name" : "arg1",
+          "type" : {
+            "name" : "I32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : true
+          },
+          "ref" : false,
+          "annotation" : "The I32 command argument"
+        },
+        {
+          "name" : "arg2",
+          "type" : {
+            "name" : "F32",
+            "kind" : "float",
+            "size" : 32
+          },
+          "ref" : false,
+          "annotation" : "The F32 command argument"
+        },
+        {
+          "name" : "arg3",
+          "type" : {
+            "name" : "U8",
+            "kind" : "integer",
+            "size" : 8,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The U8 command argument"
+        }
+      ],
+      "queueFullBehavior" : "assert",
+      "annotation" : "No-op command"
+    },
+    {
+      "name" : "CfsCore.cmdDisp.CMD_CLEAR_TRACKING",
+      "commandKind" : "async",
+      "opcode" : 16777219,
+      "formalParams" : [
+      ],
+      "queueFullBehavior" : "assert",
+      "annotation" : "Clear command tracking info to recover from components not returning status"
+    },
+    {
+      "name" : "CfsCore.tlmSend.SET_LEVEL",
+      "commandKind" : "async",
+      "opcode" : 16781312,
+      "formalParams" : [
+        {
+          "name" : "level",
+          "type" : {
+            "name" : "FwChanIdType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The I32 command argument"
+        }
+      ],
+      "queueFullBehavior" : "assert",
+      "annotation" : "Set telemetry send level"
+    },
+    {
+      "name" : "CfsCore.tlmSend.SEND_PKT",
+      "commandKind" : "async",
+      "opcode" : 16781313,
+      "formalParams" : [
+        {
+          "name" : "id",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The packet ID"
+        },
+        {
+          "name" : "section",
+          "type" : {
+            "name" : "Svc.TelemetrySection",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "Section to emit packet"
+        }
+      ],
+      "queueFullBehavior" : "assert",
+      "annotation" : "Force a packet to be sent"
+    },
+    {
+      "name" : "CfsCore.tlmSend.ENABLE_SECTION",
+      "commandKind" : "async",
+      "opcode" : 16781314,
+      "formalParams" : [
+        {
+          "name" : "section",
+          "type" : {
+            "name" : "Svc.TelemetrySection",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "Section grouping to configure"
+        },
+        {
+          "name" : "enable",
+          "type" : {
+            "name" : "Fw.Enabled",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "Section enabled or disabled"
+        }
+      ],
+      "queueFullBehavior" : "assert",
+      "annotation" : "Enable / disable a telemetry section"
+    },
+    {
+      "name" : "CfsCore.tlmSend.ENABLE_GROUP",
+      "commandKind" : "async",
+      "opcode" : 16781315,
+      "formalParams" : [
+        {
+          "name" : "section",
+          "type" : {
+            "name" : "Svc.TelemetrySection",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "Section grouping to configure"
+        },
+        {
+          "name" : "tlmGroup",
+          "type" : {
+            "name" : "FwChanIdType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "Group Identifier"
+        },
+        {
+          "name" : "enable",
+          "type" : {
+            "name" : "Fw.Enabled",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "Section enabled or disabled"
+        }
+      ],
+      "queueFullBehavior" : "assert",
+      "annotation" : "Enable / disable telemetry of a group on a section"
+    },
+    {
+      "name" : "CfsCore.tlmSend.FORCE_GROUP",
+      "commandKind" : "async",
+      "opcode" : 16781316,
+      "formalParams" : [
+        {
+          "name" : "section",
+          "type" : {
+            "name" : "Svc.TelemetrySection",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "Section grouping"
+        },
+        {
+          "name" : "tlmGroup",
+          "type" : {
+            "name" : "FwChanIdType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "Group Identifier"
+        },
+        {
+          "name" : "enable",
+          "type" : {
+            "name" : "Fw.Enabled",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "Section enabled or disabled"
+        }
+      ],
+      "queueFullBehavior" : "assert",
+      "annotation" : "Force telemetering a group on a section, even if disabled"
+    },
+    {
+      "name" : "CfsCore.tlmSend.CONFIGURE_GROUP_RATES",
+      "commandKind" : "async",
+      "opcode" : 16781317,
+      "formalParams" : [
+        {
+          "name" : "section",
+          "type" : {
+            "name" : "Svc.TelemetrySection",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "Section grouping"
+        },
+        {
+          "name" : "tlmGroup",
+          "type" : {
+            "name" : "FwChanIdType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "Group Identifier"
+        },
+        {
+          "name" : "rateLogic",
+          "type" : {
+            "name" : "Svc.RateLogic",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "Rate Logic"
+        },
+        {
+          "name" : "minDelta",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Minimum Sched Ticks to send packets on updates when using ON_CHANGE logic"
+        },
+        {
+          "name" : "maxDelta",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Maximum Sched Ticks between packets to send when using EVERY_MAX logic"
+        }
+      ],
+      "queueFullBehavior" : "assert",
+      "annotation" : "Set Min and Max Deltas between successive packets"
+    },
+    {
+      "name" : "CfsCore.tlmSend.SECTION_ENABLED_PRM_SET",
+      "commandKind" : "set",
+      "opcode" : 16781318,
+      "formalParams" : [
+        {
+          "name" : "val",
+          "type" : {
+            "name" : "Svc.TlmPacketizer.SectionEnabled",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false
+        }
+      ],
+      "annotation" : "Parameter to control section enable flags"
+    },
+    {
+      "name" : "CfsCore.tlmSend.SECTION_ENABLED_PRM_SAVE",
+      "commandKind" : "save",
+      "opcode" : 16781319,
+      "formalParams" : [
+      ],
+      "annotation" : "Parameter to control section enable flags"
+    },
+    {
+      "name" : "CfsCore.tlmSend.SECTION_CONFIGS_PRM_SET",
+      "commandKind" : "set",
+      "opcode" : 16781320,
+      "formalParams" : [
+        {
+          "name" : "val",
+          "type" : {
+            "name" : "Svc.TlmPacketizer.SectionConfigs",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false
+        }
+      ],
+      "annotation" : "Parameter to control section configuration"
+    },
+    {
+      "name" : "CfsCore.tlmSend.SECTION_CONFIGS_PRM_SAVE",
+      "commandKind" : "save",
+      "opcode" : 16781321,
+      "formalParams" : [
+      ],
+      "annotation" : "Parameter to control section configuration"
+    },
+    {
+      "name" : "CfsCore.health.HLTH_ENABLE",
+      "commandKind" : "async",
+      "opcode" : 16785408,
+      "formalParams" : [
+        {
+          "name" : "enable",
+          "type" : {
+            "name" : "Fw.Enabled",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "whether or not health checks are enabled"
+        }
+      ],
+      "queueFullBehavior" : "assert",
+      "annotation" : "A command to enable or disable health checks"
+    },
+    {
+      "name" : "CfsCore.health.HLTH_PING_ENABLE",
+      "commandKind" : "async",
+      "opcode" : 16785409,
+      "formalParams" : [
+        {
+          "name" : "entry",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 40
+          },
+          "ref" : false,
+          "annotation" : "The entry to enable/disable"
+        },
+        {
+          "name" : "enable",
+          "type" : {
+            "name" : "Fw.Enabled",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "whether or not a port is pinged"
+        }
+      ],
+      "queueFullBehavior" : "assert",
+      "annotation" : "Ignore a particular ping entry"
+    },
+    {
+      "name" : "CfsCore.health.HLTH_CHNG_PING",
+      "commandKind" : "async",
+      "opcode" : 16785410,
+      "formalParams" : [
+        {
+          "name" : "entry",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 40
+          },
+          "ref" : false,
+          "annotation" : "The entry to modify"
+        },
+        {
+          "name" : "warningValue",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Ping warning threshold"
+        },
+        {
+          "name" : "fatalValue",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Ping fatal threshold"
+        }
+      ],
+      "queueFullBehavior" : "assert",
+      "annotation" : "Change ping value"
+    },
+    {
+      "name" : "CfsCore.version.ENABLE",
+      "commandKind" : "guarded",
+      "opcode" : 16789504,
+      "formalParams" : [
+        {
+          "name" : "enable",
+          "type" : {
+            "name" : "Svc.VersionEnabled",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "whether or not Version telemetry is enabled"
+        }
+      ],
+      "annotation" : "A command to enable or disable Event verbosity and Telemetry"
+    },
+    {
+      "name" : "CfsCore.version.VERSION",
+      "commandKind" : "guarded",
+      "opcode" : 16789505,
+      "formalParams" : [
+        {
+          "name" : "version_type",
+          "type" : {
+            "name" : "Svc.VersionType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "which version type Event is requested"
+        }
+      ],
+      "annotation" : "Report version as Event"
+    },
+    {
+      "name" : "CfsCore.events.SET_EVENT_FILTER",
+      "commandKind" : "sync",
+      "opcode" : 16801792,
+      "formalParams" : [
+        {
+          "name" : "filterLevel",
+          "type" : {
+            "name" : "Svc.EventManager.FilterSeverity",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "Filter level"
+        },
+        {
+          "name" : "filterEnabled",
+          "type" : {
+            "name" : "Svc.EventManager.Enabled",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "Filter state"
+        }
+      ],
+      "annotation" : "Set filter for reporting events. Events are not stored in component."
+    },
+    {
+      "name" : "CfsCore.events.SET_ID_FILTER",
+      "commandKind" : "async",
+      "opcode" : 16801794,
+      "formalParams" : [
+        {
+          "name" : "ID",
+          "type" : {
+            "name" : "FwEventIdType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false
+        },
+        {
+          "name" : "idFilterEnabled",
+          "type" : {
+            "name" : "Svc.EventManager.Enabled",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "ID filter state"
+        }
+      ],
+      "queueFullBehavior" : "assert",
+      "annotation" : "Filter a particular ID"
+    },
+    {
+      "name" : "CfsCore.events.DUMP_FILTER_STATE",
+      "commandKind" : "async",
+      "opcode" : 16801795,
+      "formalParams" : [
+      ],
+      "queueFullBehavior" : "assert",
+      "annotation" : "Dump the filter states via events"
+    }
+  ],
+  "parameters" : [
+    {
+      "name" : "CfsCore.tlmSend.SECTION_ENABLED",
+      "type" : {
+        "name" : "Svc.TlmPacketizer.SectionEnabled",
+        "kind" : "qualifiedIdentifier"
+      },
+      "id" : 16781312,
+      "default" : [
+        "Fw.Enabled.ENABLED",
+        "Fw.Enabled.ENABLED"
+      ],
+      "annotation" : "Parameter to control section enable flags"
+    },
+    {
+      "name" : "CfsCore.tlmSend.SECTION_CONFIGS",
+      "type" : {
+        "name" : "Svc.TlmPacketizer.SectionConfigs",
+        "kind" : "qualifiedIdentifier"
+      },
+      "id" : 16781313,
+      "default" : [
+        [
+          {
+            "enabled" : "Fw.Enabled.ENABLED",
+            "min" : 0,
+            "max" : 0,
+            "rateLogic" : "Svc.RateLogic.ON_CHANGE_MIN",
+            "forceEnabled" : "Fw.Enabled.DISABLED"
+          },
+          {
+            "enabled" : "Fw.Enabled.ENABLED",
+            "min" : 0,
+            "max" : 0,
+            "rateLogic" : "Svc.RateLogic.ON_CHANGE_MIN",
+            "forceEnabled" : "Fw.Enabled.DISABLED"
+          },
+          {
+            "enabled" : "Fw.Enabled.ENABLED",
+            "min" : 0,
+            "max" : 0,
+            "rateLogic" : "Svc.RateLogic.ON_CHANGE_MIN",
+            "forceEnabled" : "Fw.Enabled.DISABLED"
+          },
+          {
+            "enabled" : "Fw.Enabled.ENABLED",
+            "min" : 0,
+            "max" : 0,
+            "rateLogic" : "Svc.RateLogic.ON_CHANGE_MIN",
+            "forceEnabled" : "Fw.Enabled.DISABLED"
+          }
+        ],
+        [
+          {
+            "enabled" : "Fw.Enabled.ENABLED",
+            "min" : 0,
+            "max" : 0,
+            "rateLogic" : "Svc.RateLogic.ON_CHANGE_MIN",
+            "forceEnabled" : "Fw.Enabled.DISABLED"
+          },
+          {
+            "enabled" : "Fw.Enabled.ENABLED",
+            "min" : 0,
+            "max" : 0,
+            "rateLogic" : "Svc.RateLogic.ON_CHANGE_MIN",
+            "forceEnabled" : "Fw.Enabled.DISABLED"
+          },
+          {
+            "enabled" : "Fw.Enabled.ENABLED",
+            "min" : 0,
+            "max" : 0,
+            "rateLogic" : "Svc.RateLogic.ON_CHANGE_MIN",
+            "forceEnabled" : "Fw.Enabled.DISABLED"
+          },
+          {
+            "enabled" : "Fw.Enabled.ENABLED",
+            "min" : 0,
+            "max" : 0,
+            "rateLogic" : "Svc.RateLogic.ON_CHANGE_MIN",
+            "forceEnabled" : "Fw.Enabled.DISABLED"
+          }
+        ]
+      ],
+      "annotation" : "Parameter to control section configuration"
+    }
+  ],
+  "events" : [
+    {
+      "name" : "CfsCore.cmdDisp.OpCodeRegistered",
+      "severity" : "DIAGNOSTIC",
+      "formalParams" : [
+        {
+          "name" : "Opcode",
+          "type" : {
+            "name" : "FwOpcodeType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The opcode to register"
+        },
+        {
+          "name" : "port",
+          "type" : {
+            "name" : "I32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : true
+          },
+          "ref" : false,
+          "annotation" : "The registration port"
+        },
+        {
+          "name" : "slot",
+          "type" : {
+            "name" : "I32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : true
+          },
+          "ref" : false,
+          "annotation" : "The dispatch slot it was placed in"
+        }
+      ],
+      "id" : 16777216,
+      "format" : "Opcode 0x{x} registered to port {} slot {}"
+    },
+    {
+      "name" : "CfsCore.cmdDisp.OpCodeDispatched",
+      "severity" : "COMMAND",
+      "formalParams" : [
+        {
+          "name" : "Opcode",
+          "type" : {
+            "name" : "FwOpcodeType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The opcode dispatched"
+        },
+        {
+          "name" : "port",
+          "type" : {
+            "name" : "I32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : true
+          },
+          "ref" : false,
+          "annotation" : "The port dispatched to"
+        }
+      ],
+      "id" : 16777217,
+      "format" : "Opcode 0x{x} dispatched to port {}",
+      "annotation" : "Op code dispatched event"
+    },
+    {
+      "name" : "CfsCore.cmdDisp.OpCodeCompleted",
+      "severity" : "COMMAND",
+      "formalParams" : [
+        {
+          "name" : "Opcode",
+          "type" : {
+            "name" : "FwOpcodeType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The I32 command argument"
+        }
+      ],
+      "id" : 16777218,
+      "format" : "Opcode 0x{x} completed",
+      "annotation" : "Op code completed event"
+    },
+    {
+      "name" : "CfsCore.cmdDisp.OpCodeError",
+      "severity" : "COMMAND",
+      "formalParams" : [
+        {
+          "name" : "Opcode",
+          "type" : {
+            "name" : "FwOpcodeType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The opcode with the error"
+        },
+        {
+          "name" : "error",
+          "type" : {
+            "name" : "Fw.CmdResponse",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The error value"
+        }
+      ],
+      "id" : 16777219,
+      "format" : "Opcode 0x{x} completed with error {}",
+      "annotation" : "Op code completed with error event"
+    },
+    {
+      "name" : "CfsCore.cmdDisp.MalformedCommand",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "Status",
+          "type" : {
+            "name" : "Fw.DeserialStatus",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The deserialization error"
+        }
+      ],
+      "id" : 16777220,
+      "format" : "Received malformed command packet. Status: {}",
+      "annotation" : "Received a malformed command packet"
+    },
+    {
+      "name" : "CfsCore.cmdDisp.InvalidCommand",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "Opcode",
+          "type" : {
+            "name" : "FwOpcodeType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "Invalid opcode"
+        }
+      ],
+      "id" : 16777221,
+      "format" : "Invalid opcode 0x{x} received",
+      "annotation" : "Received an invalid opcode"
+    },
+    {
+      "name" : "CfsCore.cmdDisp.TooManyCommands",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "Opcode",
+          "type" : {
+            "name" : "FwOpcodeType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The opcode that overflowed the list"
+        }
+      ],
+      "id" : 16777222,
+      "format" : "Too many outstanding commands. opcode=0x{x}",
+      "annotation" : "Exceeded the number of commands that can be simultaneously executed"
+    },
+    {
+      "name" : "CfsCore.cmdDisp.NoOpReceived",
+      "severity" : "ACTIVITY_HI",
+      "formalParams" : [
+      ],
+      "id" : 16777223,
+      "format" : "Received a NO-OP command",
+      "annotation" : "The command dispatcher has successfully received a NO-OP command"
+    },
+    {
+      "name" : "CfsCore.cmdDisp.NoOpStringReceived",
+      "severity" : "ACTIVITY_HI",
+      "formalParams" : [
+        {
+          "name" : "message",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 40
+          },
+          "ref" : false,
+          "annotation" : "The NO-OP string that is generated"
+        }
+      ],
+      "id" : 16777224,
+      "format" : "Received a NO-OP string={}",
+      "annotation" : "The command dispatcher has successfully received a NO-OP command from GUI with a string"
+    },
+    {
+      "name" : "CfsCore.cmdDisp.TestCmd1Args",
+      "severity" : "ACTIVITY_HI",
+      "formalParams" : [
+        {
+          "name" : "arg1",
+          "type" : {
+            "name" : "I32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : true
+          },
+          "ref" : false,
+          "annotation" : "Arg1"
+        },
+        {
+          "name" : "arg2",
+          "type" : {
+            "name" : "F32",
+            "kind" : "float",
+            "size" : 32
+          },
+          "ref" : false,
+          "annotation" : "Arg2"
+        },
+        {
+          "name" : "arg3",
+          "type" : {
+            "name" : "U8",
+            "kind" : "integer",
+            "size" : 8,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Arg3"
+        }
+      ],
+      "id" : 16777225,
+      "format" : "TEST_CMD_1 args: I32: {}, F32: {f}, U8: {}",
+      "annotation" : "This log event message returns the TEST_CMD_1 arguments."
+    },
+    {
+      "name" : "CfsCore.cmdDisp.OpCodeReregistered",
+      "severity" : "DIAGNOSTIC",
+      "formalParams" : [
+        {
+          "name" : "Opcode",
+          "type" : {
+            "name" : "FwOpcodeType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The opcode reregistered"
+        },
+        {
+          "name" : "port",
+          "type" : {
+            "name" : "I32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : true
+          },
+          "ref" : false,
+          "annotation" : "The reregistration port"
+        }
+      ],
+      "id" : 16777226,
+      "format" : "Opcode 0x{x} is already registered to port {}",
+      "annotation" : "Op code reregistered event"
+    },
+    {
+      "name" : "CfsCore.cmdDisp.CommandDroppedQueueOverflow",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "OpCode",
+          "type" : {
+            "name" : "FwOpcodeType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The command opcode dropped"
+        },
+        {
+          "name" : "Context",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The call order"
+        }
+      ],
+      "id" : 16777227,
+      "format" : "Opcode 0x{x} was dropped due to buffer overflow and not processed. Context {}",
+      "annotation" : "This log event reports the Command Sequence Buffer port queue has overflowed.",
+      "throttle" : {
+        "count" : 5,
+        "every" : null
+      }
+    },
+    {
+      "name" : "CfsCore.tlmSend.NoChan",
+      "severity" : "WARNING_LO",
+      "formalParams" : [
+        {
+          "name" : "Id",
+          "type" : {
+            "name" : "FwChanIdType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The telemetry ID"
+        }
+      ],
+      "id" : 16781312,
+      "format" : "Telemetry ID 0x{x} not packetized",
+      "annotation" : "Telemetry channel is not part of a telemetry packet."
+    },
+    {
+      "name" : "CfsCore.tlmSend.LevelSet",
+      "severity" : "ACTIVITY_HI",
+      "formalParams" : [
+        {
+          "name" : "level",
+          "type" : {
+            "name" : "FwChanIdType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The level"
+        }
+      ],
+      "id" : 16781313,
+      "format" : "Telemetry send level to {}",
+      "annotation" : "Telemetry send level set"
+    },
+    {
+      "name" : "CfsCore.tlmSend.MaxLevelExceed",
+      "severity" : "WARNING_LO",
+      "formalParams" : [
+        {
+          "name" : "level",
+          "type" : {
+            "name" : "FwChanIdType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The level"
+        },
+        {
+          "name" : "max",
+          "type" : {
+            "name" : "FwChanIdType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The max packet level"
+        }
+      ],
+      "id" : 16781314,
+      "format" : "Requested send level {} higher than max packet level of {}",
+      "annotation" : "Telemetry send level set"
+    },
+    {
+      "name" : "CfsCore.tlmSend.PacketSent",
+      "severity" : "ACTIVITY_LO",
+      "formalParams" : [
+        {
+          "name" : "packetId",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The packet ID"
+        }
+      ],
+      "id" : 16781315,
+      "format" : "Sent packet ID {}",
+      "annotation" : "Packet manually sent"
+    },
+    {
+      "name" : "CfsCore.tlmSend.PacketNotFound",
+      "severity" : "WARNING_LO",
+      "formalParams" : [
+        {
+          "name" : "packetId",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The packet ID"
+        }
+      ],
+      "id" : 16781316,
+      "format" : "Could not find packet ID {}",
+      "annotation" : "Couldn't find the packet to send"
+    },
+    {
+      "name" : "CfsCore.tlmSend.SectionUnconfigurable",
+      "severity" : "WARNING_LO",
+      "formalParams" : [
+        {
+          "name" : "section",
+          "type" : {
+            "name" : "Svc.TelemetrySection",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The Section"
+        },
+        {
+          "name" : "enable",
+          "type" : {
+            "name" : "Fw.Enabled",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "Attempted Configuration"
+        }
+      ],
+      "id" : 16781317,
+      "format" : "Section {} is unconfigurable and cannot be set to {}"
+    },
+    {
+      "name" : "CfsCore.tlmSend.OversizedChannel",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "Id",
+          "type" : {
+            "name" : "FwChanIdType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The telemetry ID"
+        },
+        {
+          "name" : "valSize",
+          "type" : {
+            "name" : "FwSizeType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The received value size"
+        },
+        {
+          "name" : "expected",
+          "type" : {
+            "name" : "FwSizeType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The configured channel size"
+        }
+      ],
+      "id" : 16781318,
+      "format" : "Telemetry ID 0x{x} update of size {} exceeds configured size {}",
+      "annotation" : "Telemetry value larger than the configured channel size",
+      "throttle" : {
+        "count" : 10,
+        "every" : null
+      }
+    },
+    {
+      "name" : "CfsCore.health.HLTH_PING_WARN",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "entry",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 40
+          },
+          "ref" : false,
+          "annotation" : "The entry passing the warning level"
+        }
+      ],
+      "id" : 16785408,
+      "format" : "Ping entry {} late warning",
+      "annotation" : "Warn that a ping target is longer than the warning value"
+    },
+    {
+      "name" : "CfsCore.health.HLTH_PING_LATE",
+      "severity" : "FATAL",
+      "formalParams" : [
+        {
+          "name" : "entry",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 40
+          },
+          "ref" : false,
+          "annotation" : "The entry passing the warning level"
+        }
+      ],
+      "id" : 16785409,
+      "format" : "Ping entry {} did not respond",
+      "annotation" : "Declare FATAL since task is no longer responding"
+    },
+    {
+      "name" : "CfsCore.health.HLTH_PING_WRONG_KEY",
+      "severity" : "FATAL",
+      "formalParams" : [
+        {
+          "name" : "entry",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 40
+          },
+          "ref" : false,
+          "annotation" : "The entry passing the warning level"
+        },
+        {
+          "name" : "badKey",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The incorrect key value"
+        }
+      ],
+      "id" : 16785410,
+      "format" : "Ping entry {} responded with wrong key 0x{x}",
+      "annotation" : "Declare FATAL since task is no longer responding"
+    },
+    {
+      "name" : "CfsCore.health.HLTH_CHECK_ENABLE",
+      "severity" : "ACTIVITY_HI",
+      "formalParams" : [
+        {
+          "name" : "enabled",
+          "type" : {
+            "name" : "Fw.Enabled",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "If health checking is enabled"
+        }
+      ],
+      "id" : 16785411,
+      "format" : "Health checking set to {}",
+      "annotation" : "Report checking turned on or off"
+    },
+    {
+      "name" : "CfsCore.health.HLTH_CHECK_PING",
+      "severity" : "ACTIVITY_HI",
+      "formalParams" : [
+        {
+          "name" : "enabled",
+          "type" : {
+            "name" : "Fw.Enabled",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "If health pinging is enabled for a particular entry"
+        },
+        {
+          "name" : "entry",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 40
+          },
+          "ref" : false,
+          "annotation" : "The entry passing the warning level"
+        }
+      ],
+      "id" : 16785412,
+      "format" : "Health checking set to {} for {}",
+      "annotation" : "Report a particular entry on or off"
+    },
+    {
+      "name" : "CfsCore.health.HLTH_CHECK_LOOKUP_ERROR",
+      "severity" : "WARNING_LO",
+      "formalParams" : [
+        {
+          "name" : "entry",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 40
+          },
+          "ref" : false,
+          "annotation" : "The entry passing the warning level"
+        }
+      ],
+      "id" : 16785413,
+      "format" : "Couldn't find entry {}",
+      "annotation" : "Entry was not found"
+    },
+    {
+      "name" : "CfsCore.health.HLTH_PING_UPDATED",
+      "severity" : "ACTIVITY_HI",
+      "formalParams" : [
+        {
+          "name" : "entry",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 40
+          },
+          "ref" : false,
+          "annotation" : "The entry changed"
+        },
+        {
+          "name" : "warn",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The new warning value"
+        },
+        {
+          "name" : "fatal",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The new FATAL value"
+        }
+      ],
+      "id" : 16785414,
+      "format" : "Health ping for {} changed to WARN {} FATAL {}",
+      "annotation" : "Report changed ping"
+    },
+    {
+      "name" : "CfsCore.health.HLTH_PING_INVALID_VALUES",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "entry",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 40
+          },
+          "ref" : false,
+          "annotation" : "The entry changed"
+        },
+        {
+          "name" : "warn",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The new warning value"
+        },
+        {
+          "name" : "fatal",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The new FATAL value"
+        }
+      ],
+      "id" : 16785415,
+      "format" : "Health ping for {} invalid values: WARN {} FATAL {}",
+      "annotation" : "Report changed ping"
+    },
+    {
+      "name" : "CfsCore.version.FrameworkVersion",
+      "severity" : "ACTIVITY_LO",
+      "formalParams" : [
+        {
+          "name" : "version",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 40
+          },
+          "ref" : false,
+          "annotation" : "version string"
+        }
+      ],
+      "id" : 16789504,
+      "format" : "Framework Version: [{}]",
+      "annotation" : "Version of the git repository."
+    },
+    {
+      "name" : "CfsCore.version.ProjectVersion",
+      "severity" : "ACTIVITY_LO",
+      "formalParams" : [
+        {
+          "name" : "version",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 40
+          },
+          "ref" : false,
+          "annotation" : "version string"
+        }
+      ],
+      "id" : 16789505,
+      "format" : "Project Version: [{}]",
+      "annotation" : "Version of the git repository."
+    },
+    {
+      "name" : "CfsCore.version.LibraryVersions",
+      "severity" : "ACTIVITY_LO",
+      "formalParams" : [
+        {
+          "name" : "version",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 40
+          },
+          "ref" : false,
+          "annotation" : "version string"
+        }
+      ],
+      "id" : 16789506,
+      "format" : "Library Versions: [{}]",
+      "annotation" : "Version of the git repository."
+    },
+    {
+      "name" : "CfsCore.version.CustomVersions",
+      "severity" : "ACTIVITY_LO",
+      "formalParams" : [
+        {
+          "name" : "version_enum",
+          "type" : {
+            "name" : "Svc.VersionCfg.VersionEnum",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The enum to access"
+        },
+        {
+          "name" : "version_value",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 40
+          },
+          "ref" : false,
+          "annotation" : "version"
+        }
+      ],
+      "id" : 16789507,
+      "format" : "Custom Versions: [{}] [{}]",
+      "annotation" : "Version of the git repository."
+    },
+    {
+      "name" : "CfsCore.fatalAdapter.AF_ASSERT_0",
+      "severity" : "FATAL",
+      "formalParams" : [
+        {
+          "name" : "file",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 240
+          },
+          "ref" : false,
+          "annotation" : "The source file of the assert"
+        },
+        {
+          "name" : "line",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Line number of the assert"
+        }
+      ],
+      "id" : 16797696,
+      "format" : "Assert in file {}, line {}",
+      "annotation" : "An assert happened"
+    },
+    {
+      "name" : "CfsCore.fatalAdapter.AF_ASSERT_1",
+      "severity" : "FATAL",
+      "formalParams" : [
+        {
+          "name" : "file",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 240
+          },
+          "ref" : false,
+          "annotation" : "The source file of the assert"
+        },
+        {
+          "name" : "line",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Line number of the assert"
+        },
+        {
+          "name" : "arg1",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "First assert argument"
+        }
+      ],
+      "id" : 16797697,
+      "format" : "Assert in file {}, line {}: {}",
+      "annotation" : "An assert happened"
+    },
+    {
+      "name" : "CfsCore.fatalAdapter.AF_ASSERT_2",
+      "severity" : "FATAL",
+      "formalParams" : [
+        {
+          "name" : "file",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 240
+          },
+          "ref" : false,
+          "annotation" : "The source file of the assert"
+        },
+        {
+          "name" : "line",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Line number of the assert"
+        },
+        {
+          "name" : "arg1",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "First assert argument"
+        },
+        {
+          "name" : "arg2",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Second assert argument"
+        }
+      ],
+      "id" : 16797698,
+      "format" : "Assert in file {}, line {}: {} {}",
+      "annotation" : "An assert happened"
+    },
+    {
+      "name" : "CfsCore.fatalAdapter.AF_ASSERT_3",
+      "severity" : "FATAL",
+      "formalParams" : [
+        {
+          "name" : "file",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 240
+          },
+          "ref" : false,
+          "annotation" : "The source file of the assert"
+        },
+        {
+          "name" : "line",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Line number of the assert"
+        },
+        {
+          "name" : "arg1",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "First assert argument"
+        },
+        {
+          "name" : "arg2",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Second assert argument"
+        },
+        {
+          "name" : "arg3",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Third assert argument"
+        }
+      ],
+      "id" : 16797699,
+      "format" : "Assert in file {}, line {}: {} {} {}",
+      "annotation" : "An assert happened"
+    },
+    {
+      "name" : "CfsCore.fatalAdapter.AF_ASSERT_4",
+      "severity" : "FATAL",
+      "formalParams" : [
+        {
+          "name" : "file",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 240
+          },
+          "ref" : false,
+          "annotation" : "The source file of the assert"
+        },
+        {
+          "name" : "line",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Line number of the assert"
+        },
+        {
+          "name" : "arg1",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "First assert argument"
+        },
+        {
+          "name" : "arg2",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Second assert argument"
+        },
+        {
+          "name" : "arg3",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Third assert argument"
+        },
+        {
+          "name" : "arg4",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Fourth assert argument"
+        }
+      ],
+      "id" : 16797700,
+      "format" : "Assert in file {}, line {}: {} {} {} {}",
+      "annotation" : "An assert happened"
+    },
+    {
+      "name" : "CfsCore.fatalAdapter.AF_ASSERT_5",
+      "severity" : "FATAL",
+      "formalParams" : [
+        {
+          "name" : "file",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 240
+          },
+          "ref" : false,
+          "annotation" : "The source file of the assert"
+        },
+        {
+          "name" : "line",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Line number of the assert"
+        },
+        {
+          "name" : "arg1",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "First assert argument"
+        },
+        {
+          "name" : "arg2",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Second assert argument"
+        },
+        {
+          "name" : "arg3",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Third assert argument"
+        },
+        {
+          "name" : "arg4",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Fourth assert argument"
+        },
+        {
+          "name" : "arg5",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Fifth assert argument"
+        }
+      ],
+      "id" : 16797701,
+      "format" : "Assert in file {}, line {}: {} {} {} {} {}",
+      "annotation" : "An assert happened"
+    },
+    {
+      "name" : "CfsCore.fatalAdapter.AF_ASSERT_6",
+      "severity" : "FATAL",
+      "formalParams" : [
+        {
+          "name" : "file",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 240
+          },
+          "ref" : false,
+          "annotation" : "The source file of the assert"
+        },
+        {
+          "name" : "line",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Line number of the assert"
+        },
+        {
+          "name" : "arg1",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "First assert argument"
+        },
+        {
+          "name" : "arg2",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Second assert argument"
+        },
+        {
+          "name" : "arg3",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Third assert argument"
+        },
+        {
+          "name" : "arg4",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Fourth assert argument"
+        },
+        {
+          "name" : "arg5",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Fifth assert argument"
+        },
+        {
+          "name" : "arg6",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Sixth assert argument"
+        }
+      ],
+      "id" : 16797702,
+      "format" : "Assert in file {}, line {}: {} {} {} {} {} {}",
+      "annotation" : "An assert happened"
+    },
+    {
+      "name" : "CfsCore.fatalAdapter.AF_UNEXPECTED_ASSERT",
+      "severity" : "FATAL",
+      "formalParams" : [
+        {
+          "name" : "file",
+          "type" : {
+            "name" : "string",
+            "kind" : "string",
+            "size" : 240
+          },
+          "ref" : false,
+          "annotation" : "The source file of the assert"
+        },
+        {
+          "name" : "line",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Line number of the assert"
+        },
+        {
+          "name" : "numArgs",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "Number of unexpected arguments"
+        }
+      ],
+      "id" : 16797703,
+      "format" : "Unexpected assert in file {}, line {}, args {}",
+      "annotation" : "An unexpected assert happened"
+    },
+    {
+      "name" : "CfsCore.events.SEVERITY_FILTER_STATE",
+      "severity" : "ACTIVITY_LO",
+      "formalParams" : [
+        {
+          "name" : "severity",
+          "type" : {
+            "name" : "Svc.EventManager.FilterSeverity",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The severity level"
+        },
+        {
+          "name" : "enabled",
+          "type" : {
+            "name" : "bool",
+            "kind" : "bool",
+            "size" : 8
+          },
+          "ref" : false
+        }
+      ],
+      "id" : 16801792,
+      "format" : "{} filter state. {}",
+      "annotation" : "Dump severity filter state"
+    },
+    {
+      "name" : "CfsCore.events.ID_FILTER_ENABLED",
+      "severity" : "ACTIVITY_HI",
+      "formalParams" : [
+        {
+          "name" : "ID",
+          "type" : {
+            "name" : "FwEventIdType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The ID filtered"
+        }
+      ],
+      "id" : 16801793,
+      "format" : "ID {} is filtered.",
+      "annotation" : "Indicate ID is filtered"
+    },
+    {
+      "name" : "CfsCore.events.ID_FILTER_LIST_FULL",
+      "severity" : "WARNING_LO",
+      "formalParams" : [
+        {
+          "name" : "ID",
+          "type" : {
+            "name" : "FwEventIdType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The ID filtered"
+        }
+      ],
+      "id" : 16801794,
+      "format" : "ID filter list is full. Cannot filter {} .",
+      "annotation" : "Attempted to add ID to full ID filter ID"
+    },
+    {
+      "name" : "CfsCore.events.ID_FILTER_REMOVED",
+      "severity" : "ACTIVITY_HI",
+      "formalParams" : [
+        {
+          "name" : "ID",
+          "type" : {
+            "name" : "FwEventIdType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The ID removed"
+        }
+      ],
+      "id" : 16801795,
+      "format" : "ID filter ID {} removed.",
+      "annotation" : "Removed an ID from the filter"
+    },
+    {
+      "name" : "CfsCore.events.ID_FILTER_NOT_FOUND",
+      "severity" : "WARNING_LO",
+      "formalParams" : [
+        {
+          "name" : "ID",
+          "type" : {
+            "name" : "FwEventIdType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The ID removed"
+        }
+      ],
+      "id" : 16801796,
+      "format" : "ID filter ID {} not found.",
+      "annotation" : "ID not in filter"
+    },
+    {
+      "name" : "CfsCore.schAppDriver.UnexpectedMessage",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "functionCode",
+          "type" : {
+            "name" : "U8",
+            "kind" : "integer",
+            "size" : 8,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The function code of the received message"
+        },
+        {
+          "name" : "dataSize",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The size of the message payload in bytes"
+        }
+      ],
+      "id" : 16809984,
+      "format" : "Unexpected scheduler message: function code {}, payload size {}",
+      "annotation" : "A message with an unexpected function code was received; no tick was produced"
+    },
+    {
+      "name" : "ComCfs.commsBufferManager.NoBuffsAvailable",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "size",
+          "type" : {
+            "name" : "FwSizeType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The requested size"
+        }
+      ],
+      "id" : 33562624,
+      "format" : "No available buffers of size {}",
+      "annotation" : "The BufferManager was unable to allocate a requested buffer",
+      "throttle" : {
+        "count" : 10,
+        "every" : null
+      }
+    },
+    {
+      "name" : "ComCfs.commsBufferManager.NullEmptyBuffer",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+      ],
+      "id" : 33562625,
+      "format" : "Received null pointer and zero size buffer",
+      "annotation" : "The buffer manager received a null pointer and zero-sized buffer as a return. Probably undetected failed buffer allocation",
+      "throttle" : {
+        "count" : 10,
+        "every" : null
+      }
+    },
+    {
+      "name" : "ComCfs.cmdBridge.AllocationFailed",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "size",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The requested allocation size in bytes"
+        }
+      ],
+      "id" : 33566720,
+      "format" : "Failed to allocate a {} byte buffer for outgoing data",
+      "annotation" : "The allocator did not return a buffer large enough for the outgoing\ndata; the data was dropped"
+    },
+    {
+      "name" : "ComCfs.cmdBridge.UnknownDescriptor",
+      "severity" : "WARNING_LO",
+      "formalParams" : [
+        {
+          "name" : "descriptor",
+          "type" : {
+            "name" : "U16",
+            "kind" : "integer",
+            "size" : 16,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The packet descriptor read from the com buffer"
+        }
+      ],
+      "id" : 33566721,
+      "format" : "Com buffer with unknown packet descriptor {} forwarded with the unknown APID",
+      "annotation" : "The packet descriptor of an incoming com buffer could not be read or\ndid not map to a known APID; the data was forwarded with the unknown\nAPID"
+    },
+    {
+      "name" : "ComCfs.tlmBridge.AllocationFailed",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "size",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The requested allocation size in bytes"
+        }
+      ],
+      "id" : 33570816,
+      "format" : "Failed to allocate a {} byte buffer for outgoing data",
+      "annotation" : "The allocator did not return a buffer large enough for the outgoing\ndata; the data was dropped"
+    },
+    {
+      "name" : "ComCfs.tlmBridge.UnknownDescriptor",
+      "severity" : "WARNING_LO",
+      "formalParams" : [
+        {
+          "name" : "descriptor",
+          "type" : {
+            "name" : "U16",
+            "kind" : "integer",
+            "size" : 16,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The packet descriptor read from the com buffer"
+        }
+      ],
+      "id" : 33570817,
+      "format" : "Com buffer with unknown packet descriptor {} forwarded with the unknown APID",
+      "annotation" : "The packet descriptor of an incoming com buffer could not be read or\ndid not map to a known APID; the data was forwarded with the unknown\nAPID"
+    },
+    {
+      "name" : "ComCfs.cmdFramer.AllocationFailed",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "size",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The requested allocation size in bytes"
+        }
+      ],
+      "id" : 33574912,
+      "format" : "Failed to allocate a {} byte buffer for a cFS command packet",
+      "annotation" : "The allocator did not return a buffer large enough for the wrapped packet;\nthe packet was dropped"
+    },
+    {
+      "name" : "ComCfs.tlmFramer.AllocationFailed",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "size",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The requested allocation size in bytes"
+        }
+      ],
+      "id" : 33579008,
+      "format" : "Failed to allocate a {} byte buffer for a cFS telemetry packet",
+      "annotation" : "The allocator did not return a buffer large enough for the wrapped packet;\nthe packet was dropped"
+    },
+    {
+      "name" : "ComCfs.tlmFramer.TimeExtractionFailed",
+      "severity" : "WARNING_LO",
+      "formalParams" : [
+        {
+          "name" : "descriptor",
+          "type" : {
+            "name" : "U16",
+            "kind" : "integer",
+            "size" : 16,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The packet descriptor of the incoming packet"
+        }
+      ],
+      "id" : 33579009,
+      "format" : "Could not extract a time tag from packet with descriptor {}; using current time",
+      "annotation" : "A time tag could not be extracted from an incoming packet; the current\nsystem time was used instead"
+    },
+    {
+      "name" : "ComCfs.spacePacketFramer.NoBufferAvailable",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+      ],
+      "id" : 33583104,
+      "format" : "Failed to allocate a packet buffer: packet dropped",
+      "annotation" : "No buffer was available to hold the packet, which was dropped",
+      "throttle" : {
+        "count" : 5,
+        "every" : null
+      }
+    },
+    {
+      "name" : "ComCfs.spacePacketDeframer.InvalidPacket",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+      ],
+      "id" : 33587200,
+      "format" : "Malformed packet received refusing to deframe",
+      "annotation" : "Deframing received a malformed packet"
+    },
+    {
+      "name" : "ComCfs.spacePacketDeframer.InvalidLength",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "transmitted",
+          "type" : {
+            "name" : "FwSizeType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false
+        },
+        {
+          "name" : "actual",
+          "type" : {
+            "name" : "FwSizeType",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false
+        }
+      ],
+      "id" : 33587201,
+      "format" : "Invalid length received. Header specified packet byte size of {} | Actual received data length: {}",
+      "annotation" : "Deframing received an invalid frame length"
+    },
+    {
+      "name" : "ComCfs.apidManager.UnexpectedSequenceCount",
+      "severity" : "WARNING_LO",
+      "formalParams" : [
+        {
+          "name" : "transmitted",
+          "type" : {
+            "name" : "U16",
+            "kind" : "integer",
+            "size" : 16,
+            "signed" : false
+          },
+          "ref" : false
+        },
+        {
+          "name" : "expected",
+          "type" : {
+            "name" : "U16",
+            "kind" : "integer",
+            "size" : 16,
+            "signed" : false
+          },
+          "ref" : false
+        }
+      ],
+      "id" : 33591296,
+      "format" : "Unexpected sequence count received. Packets may have been dropped. Transmitted: {} | Expected on board: {}",
+      "annotation" : "Deframing received an unexpected sequence count"
+    },
+    {
+      "name" : "ComCfs.cfsRouter.SerializationError",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "status",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The status of the operation"
+        }
+      ],
+      "id" : 33595392,
+      "format" : "Serializing com buffer failed with status {}",
+      "annotation" : "An error occurred while copying a command packet into a com buffer"
+    },
+    {
+      "name" : "ComCfs.cfsRouter.MissingSecondaryHeader",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "apid",
+          "type" : {
+            "name" : "U16",
+            "kind" : "integer",
+            "size" : 16,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The APID of the packet"
+        },
+        {
+          "name" : "dataSize",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The size of the packet data in bytes"
+        }
+      ],
+      "id" : 33595393,
+      "format" : "Packet with APID {} (size {}) is missing the required cFS secondary header",
+      "annotation" : "A packet routed as a cFS command or telemetry message is missing its secondary header"
+    },
+    {
+      "name" : "ComCfs.cfsRouter.TooManyPendingBuffers",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "apid",
+          "type" : {
+            "name" : "U16",
+            "kind" : "integer",
+            "size" : 16,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The APID of the packet"
+        }
+      ],
+      "id" : 33595394,
+      "format" : "Packet with APID {} dropped: too many pending buffers",
+      "annotation" : "Too many buffers are outstanding on the pass-through routes; the packet was\nreturned to the sender unrouted"
+    },
+    {
+      "name" : "ComCfs.cfsCmdRouter.BadChecksum",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "apid",
+          "type" : {
+            "name" : "U16",
+            "kind" : "integer",
+            "size" : 16,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The APID of the message"
+        },
+        {
+          "name" : "functionCode",
+          "type" : {
+            "name" : "U8",
+            "kind" : "integer",
+            "size" : 8,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The function code of the message"
+        },
+        {
+          "name" : "checksum",
+          "type" : {
+            "name" : "U8",
+            "kind" : "integer",
+            "size" : 8,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The XOR residual over the message (zero when valid)"
+        }
+      ],
+      "id" : 33599488,
+      "format" : "Command with APID {} function code {} dropped: bad checksum (residual {})",
+      "annotation" : "A message failed the cFS command checksum and was dropped"
+    },
+    {
+      "name" : "ComCfs.cfsCmdRouter.MissingSecondaryHeader",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "apid",
+          "type" : {
+            "name" : "U16",
+            "kind" : "integer",
+            "size" : 16,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The APID of the message"
+        },
+        {
+          "name" : "dataSize",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The size of the message data in bytes"
+        }
+      ],
+      "id" : 33599489,
+      "format" : "Command with APID {} (size {}) is missing the required cFS command secondary header",
+      "annotation" : "A message is missing its cFS command secondary header"
+    },
+    {
+      "name" : "ComCfs.cfsCmdRouter.SerializationError",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "status",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The status of the operation"
+        }
+      ],
+      "id" : 33599490,
+      "format" : "Serializing com buffer failed with status {}",
+      "annotation" : "An error occurred while copying a message into a com buffer"
+    },
+    {
+      "name" : "ComCfs.cfsCmdRouter.TooManyPendingBuffers",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "apid",
+          "type" : {
+            "name" : "U16",
+            "kind" : "integer",
+            "size" : 16,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The APID of the message"
+        }
+      ],
+      "id" : 33599491,
+      "format" : "Command with APID {} dropped: too many pending buffers",
+      "annotation" : "Too many buffers are outstanding on the pass-through routes; the message was\nreturned to the sender unrouted"
+    },
+    {
+      "name" : "FPrimeApp.rateGroup1.RateGroupStarted",
+      "severity" : "DIAGNOSTIC",
+      "formalParams" : [
+      ],
+      "id" : 268439552,
+      "format" : "Rate group started.",
+      "annotation" : "Informational event that rate group has started"
+    },
+    {
+      "name" : "FPrimeApp.rateGroup1.RateGroupCycleSlip",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "cycle",
+          "type" : {
+            "name" : "U32",
+            "kind" : "integer",
+            "size" : 32,
+            "signed" : false
+          },
+          "ref" : false,
+          "annotation" : "The cycle where the cycle occurred"
+        }
+      ],
+      "id" : 268439553,
+      "format" : "Rate group cycle slipped on cycle {}",
+      "annotation" : "Warning event that rate group has had a cycle slip"
+    },
+    {
+      "name" : "FPrimeApp.rateGroup1.RateGroupTimeGetError",
+      "severity" : "WARNING_HI",
+      "formalParams" : [
+        {
+          "name" : "status",
+          "type" : {
+            "name" : "Os.RawTimeStatus",
+            "kind" : "qualifiedIdentifier"
+          },
+          "ref" : false,
+          "annotation" : "The status returned by the time read"
+        }
+      ],
+      "id" : 268439554,
+      "format" : "Rate group failed to read cycle end time with status {}",
+      "annotation" : "Warning event that reading the cycle end time failed",
+      "throttle" : {
+        "count" : 5,
+        "every" : null
+      }
+    }
+  ],
+  "telemetryChannels" : [
+    {
+      "name" : "CfsCore.cmdDisp.CommandsDispatched",
+      "type" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "id" : 16777216,
+      "telemetryUpdate" : "on change",
+      "annotation" : "Number of commands dispatched"
+    },
+    {
+      "name" : "CfsCore.cmdDisp.CommandErrors",
+      "type" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "id" : 16777217,
+      "telemetryUpdate" : "on change",
+      "annotation" : "Number of command errors"
+    },
+    {
+      "name" : "CfsCore.cmdDisp.CommandsDropped",
+      "type" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "id" : 16777218,
+      "telemetryUpdate" : "on change",
+      "annotation" : "Number of commands drooped due to buffer overflow"
+    },
+    {
+      "name" : "CfsCore.tlmSend.GroupConfigs",
+      "type" : {
+        "name" : "Svc.TlmPacketizer.SectionConfigs",
+        "kind" : "qualifiedIdentifier"
+      },
+      "id" : 16781312,
+      "telemetryUpdate" : "always",
+      "annotation" : "Telemetry send level"
+    },
+    {
+      "name" : "CfsCore.tlmSend.SectionEnabled",
+      "type" : {
+        "name" : "Svc.TlmPacketizer.SectionEnabled",
+        "kind" : "qualifiedIdentifier"
+      },
+      "id" : 16781313,
+      "telemetryUpdate" : "always"
+    },
+    {
+      "name" : "CfsCore.health.PingLateWarnings",
+      "type" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "id" : 16785408,
+      "telemetryUpdate" : "always",
+      "annotation" : "Number of overrun warnings"
+    },
+    {
+      "name" : "CfsCore.version.FrameworkVersion",
+      "type" : {
+        "name" : "string",
+        "kind" : "string",
+        "size" : 40
+      },
+      "id" : 16789504,
+      "telemetryUpdate" : "always",
+      "annotation" : "Software framework version"
+    },
+    {
+      "name" : "CfsCore.version.ProjectVersion",
+      "type" : {
+        "name" : "string",
+        "kind" : "string",
+        "size" : 40
+      },
+      "id" : 16789505,
+      "telemetryUpdate" : "always",
+      "annotation" : "Software project version"
+    },
+    {
+      "name" : "CfsCore.version.CustomVersion01",
+      "type" : {
+        "name" : "Svc.CustomVersionDb",
+        "kind" : "qualifiedIdentifier"
+      },
+      "id" : 16789506,
+      "telemetryUpdate" : "always",
+      "annotation" : "Custom Versions"
+    },
+    {
+      "name" : "CfsCore.version.CustomVersion02",
+      "type" : {
+        "name" : "Svc.CustomVersionDb",
+        "kind" : "qualifiedIdentifier"
+      },
+      "id" : 16789507,
+      "telemetryUpdate" : "always"
+    },
+    {
+      "name" : "CfsCore.version.CustomVersion03",
+      "type" : {
+        "name" : "Svc.CustomVersionDb",
+        "kind" : "qualifiedIdentifier"
+      },
+      "id" : 16789508,
+      "telemetryUpdate" : "always"
+    },
+    {
+      "name" : "CfsCore.version.CustomVersion04",
+      "type" : {
+        "name" : "Svc.CustomVersionDb",
+        "kind" : "qualifiedIdentifier"
+      },
+      "id" : 16789509,
+      "telemetryUpdate" : "always"
+    },
+    {
+      "name" : "CfsCore.version.CustomVersion05",
+      "type" : {
+        "name" : "Svc.CustomVersionDb",
+        "kind" : "qualifiedIdentifier"
+      },
+      "id" : 16789510,
+      "telemetryUpdate" : "always"
+    },
+    {
+      "name" : "CfsCore.version.CustomVersion06",
+      "type" : {
+        "name" : "Svc.CustomVersionDb",
+        "kind" : "qualifiedIdentifier"
+      },
+      "id" : 16789511,
+      "telemetryUpdate" : "always"
+    },
+    {
+      "name" : "CfsCore.version.CustomVersion07",
+      "type" : {
+        "name" : "Svc.CustomVersionDb",
+        "kind" : "qualifiedIdentifier"
+      },
+      "id" : 16789512,
+      "telemetryUpdate" : "always"
+    },
+    {
+      "name" : "CfsCore.version.CustomVersion08",
+      "type" : {
+        "name" : "Svc.CustomVersionDb",
+        "kind" : "qualifiedIdentifier"
+      },
+      "id" : 16789513,
+      "telemetryUpdate" : "always"
+    },
+    {
+      "name" : "CfsCore.version.CustomVersion09",
+      "type" : {
+        "name" : "Svc.CustomVersionDb",
+        "kind" : "qualifiedIdentifier"
+      },
+      "id" : 16789514,
+      "telemetryUpdate" : "always"
+    },
+    {
+      "name" : "CfsCore.version.CustomVersion10",
+      "type" : {
+        "name" : "Svc.CustomVersionDb",
+        "kind" : "qualifiedIdentifier"
+      },
+      "id" : 16789515,
+      "telemetryUpdate" : "always"
+    },
+    {
+      "name" : "CfsCore.version.LibraryVersion01",
+      "type" : {
+        "name" : "string",
+        "kind" : "string",
+        "size" : 40
+      },
+      "id" : 16789516,
+      "telemetryUpdate" : "always",
+      "annotation" : "Library Versions"
+    },
+    {
+      "name" : "CfsCore.version.LibraryVersion02",
+      "type" : {
+        "name" : "string",
+        "kind" : "string",
+        "size" : 40
+      },
+      "id" : 16789517,
+      "telemetryUpdate" : "always"
+    },
+    {
+      "name" : "CfsCore.version.LibraryVersion03",
+      "type" : {
+        "name" : "string",
+        "kind" : "string",
+        "size" : 40
+      },
+      "id" : 16789518,
+      "telemetryUpdate" : "always"
+    },
+    {
+      "name" : "CfsCore.version.LibraryVersion04",
+      "type" : {
+        "name" : "string",
+        "kind" : "string",
+        "size" : 40
+      },
+      "id" : 16789519,
+      "telemetryUpdate" : "always"
+    },
+    {
+      "name" : "CfsCore.version.LibraryVersion05",
+      "type" : {
+        "name" : "string",
+        "kind" : "string",
+        "size" : 40
+      },
+      "id" : 16789520,
+      "telemetryUpdate" : "always"
+    },
+    {
+      "name" : "CfsCore.version.LibraryVersion06",
+      "type" : {
+        "name" : "string",
+        "kind" : "string",
+        "size" : 40
+      },
+      "id" : 16789521,
+      "telemetryUpdate" : "always"
+    },
+    {
+      "name" : "CfsCore.version.LibraryVersion07",
+      "type" : {
+        "name" : "string",
+        "kind" : "string",
+        "size" : 40
+      },
+      "id" : 16789522,
+      "telemetryUpdate" : "always"
+    },
+    {
+      "name" : "CfsCore.version.LibraryVersion08",
+      "type" : {
+        "name" : "string",
+        "kind" : "string",
+        "size" : 40
+      },
+      "id" : 16789523,
+      "telemetryUpdate" : "always"
+    },
+    {
+      "name" : "CfsCore.version.LibraryVersion09",
+      "type" : {
+        "name" : "string",
+        "kind" : "string",
+        "size" : 40
+      },
+      "id" : 16789524,
+      "telemetryUpdate" : "always"
+    },
+    {
+      "name" : "CfsCore.version.LibraryVersion10",
+      "type" : {
+        "name" : "string",
+        "kind" : "string",
+        "size" : 40
+      },
+      "id" : 16789525,
+      "telemetryUpdate" : "always"
+    },
+    {
+      "name" : "CfsCore.events.EventsDropped",
+      "type" : {
+        "name" : "FwSizeType",
+        "kind" : "qualifiedIdentifier"
+      },
+      "id" : 16801792,
+      "telemetryUpdate" : "on change",
+      "annotation" : "Number of events dropped due to queue full"
+    },
+    {
+      "name" : "ComCfs.commsBufferManager.TotalBuffs",
+      "type" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "id" : 33562624,
+      "telemetryUpdate" : "on change",
+      "annotation" : "The total buffers allocated"
+    },
+    {
+      "name" : "ComCfs.commsBufferManager.CurrBuffs",
+      "type" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "id" : 33562625,
+      "telemetryUpdate" : "on change",
+      "annotation" : "The current number of allocated buffers"
+    },
+    {
+      "name" : "ComCfs.commsBufferManager.HiBuffs",
+      "type" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "id" : 33562626,
+      "telemetryUpdate" : "on change",
+      "annotation" : "The high water mark of allocated buffers"
+    },
+    {
+      "name" : "ComCfs.commsBufferManager.NoBuffs",
+      "type" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "id" : 33562627,
+      "telemetryUpdate" : "on change",
+      "annotation" : "The number of requests that couldn't return a buffer",
+      "limits" : {
+        "high" : {
+          "red" : 1
+        }
+      }
+    },
+    {
+      "name" : "ComCfs.commsBufferManager.EmptyBuffs",
+      "type" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "id" : 33562628,
+      "telemetryUpdate" : "on change",
+      "annotation" : "The number of empty buffers returned",
+      "limits" : {
+        "high" : {
+          "red" : 1
+        }
+      }
+    },
+    {
+      "name" : "FPrimeApp.rateGroup1.RgMaxTime",
+      "type" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "id" : 268439552,
+      "telemetryUpdate" : "on change",
+      "format" : "{} us",
+      "annotation" : "Max execution time rate group"
+    },
+    {
+      "name" : "FPrimeApp.rateGroup1.RgCycleSlips",
+      "type" : {
+        "name" : "U32",
+        "kind" : "integer",
+        "size" : 32,
+        "signed" : false
+      },
+      "id" : 268439553,
+      "telemetryUpdate" : "on change",
+      "annotation" : "Cycle slips for rate group"
+    }
+  ],
+  "records" : [
+  ],
+  "containers" : [
+  ],
+  "telemetryPacketSets" : [
+    {
+      "name" : "FPrimeDeploymentPackets",
+      "members" : [
+        {
+          "name" : "Health",
+          "id" : 1,
+          "group" : 1,
+          "members" : [
+            "CfsCore.cmdDisp.CommandsDispatched",
+            "CfsCore.cmdDisp.CommandsDropped",
+            "CfsCore.health.PingLateWarnings",
+            "CfsCore.events.EventsDropped",
+            "ComCfs.commsBufferManager.NoBuffs",
+            "ComCfs.commsBufferManager.EmptyBuffs",
+            "FPrimeApp.rateGroup1.RgCycleSlips"
+          ]
+        }
+      ],
+      "omitted" : [
+        "CfsCore.cmdDisp.CommandErrors",
+        "CfsCore.tlmSend.GroupConfigs",
+        "CfsCore.tlmSend.SectionEnabled",
+        "CfsCore.version.CustomVersion01",
+        "CfsCore.version.CustomVersion02",
+        "CfsCore.version.CustomVersion03",
+        "CfsCore.version.CustomVersion04",
+        "CfsCore.version.CustomVersion05",
+        "CfsCore.version.CustomVersion06",
+        "CfsCore.version.CustomVersion07",
+        "CfsCore.version.CustomVersion08",
+        "CfsCore.version.CustomVersion09",
+        "CfsCore.version.CustomVersion10",
+        "CfsCore.version.FrameworkVersion",
+        "CfsCore.version.LibraryVersion01",
+        "CfsCore.version.LibraryVersion02",
+        "CfsCore.version.LibraryVersion03",
+        "CfsCore.version.LibraryVersion04",
+        "CfsCore.version.LibraryVersion05",
+        "CfsCore.version.LibraryVersion06",
+        "CfsCore.version.LibraryVersion07",
+        "CfsCore.version.LibraryVersion08",
+        "CfsCore.version.LibraryVersion09",
+        "CfsCore.version.LibraryVersion10",
+        "CfsCore.version.ProjectVersion",
+        "ComCfs.commsBufferManager.CurrBuffs",
+        "ComCfs.commsBufferManager.HiBuffs",
+        "ComCfs.commsBufferManager.TotalBuffs",
+        "FPrimeApp.rateGroup1.RgMaxTime"
+      ]
+    }
+  ]
+}

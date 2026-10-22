@@ -142,6 +142,53 @@ given). By default this only writes `openc3-plugin/openc3-cosmos-fprime-<deploym
 which can be installed through the COSMOS Admin tool or `openc3cli load`. With `--install` the gem is also
 installed into COSMOS (same `--cosmos-*`/`--force-install` options as the launcher).
 
+## F Prime applications hosted in cFS
+
+[fprime_cfs](https://github.com/fprime-community/fprime_cfs) runs F Prime deployments as cFS applications. Their
+packets travel on the cFS software bus as CCSDS space packets and reach the ground through the ordinary cFS
+command ingest / telemetry output applications, so the ground side is the
+[nasa/cfs-cosmos-plugin](https://github.com/nasa/cfs-cosmos-plugin), not the native plugin above.
+`fprime-to-cosmos-cfs` keeps that plugin authoritative: it copies the plugin tree (a source checkout or the
+directory its `make gem` stages) untouched, adds one command and one telemetry definition file per F Prime
+application to its `CFS` target plus the Ruby subpacketizer those definitions use, and packages the combined tree
+as a single `openc3-cosmos-cfs` gem. Nothing of the cFS plugin is regenerated or replaced.
+
+```bash
+fprime-to-cosmos-cfs --cfs-plugin path/to/cfs-cosmos-plugin \
+    --dictionary build-artifacts/exe/Linux/fprime_app/dict/FPrimeDeploymentTopologyDictionary.json \
+    [--dictionary another/AppTopologyDictionary.json ...] [--no-channelized] -o openc3-plugin [--install]
+```
+
+Per dictionary the tool derives, and refuses to proceed without:
+
+- the command message id `0x1800 | ComCfg.Apid.FW_PACKET_COMMAND` (packet type command, secondary header flag),
+- the telemetry message ids `0x0800 | ComCfg.Apid.FW_PACKET_TELEM` (channelized) and
+  `0x0800 | ComCfg.Apid.FW_PACKET_PACKETIZED_TLM` (packetized),
+- the command function code `ComCfg.FprimeCommandFunctionCode`.
+
+Message ids must be unique across the F Prime applications and distinct from the cpu 1 base stream ids of the
+cFS plugin's own message list (`targets/CFS/lib/cfs_cmd_tlm_list.rb`); collisions are reported with both owners.
+`--no-channelized` omits the channelized (TlmChan) definitions for deployments that only downlink packetized
+telemetry, such as `fprime_cfs_reference`, whose `FW_PACKET_TELEM` id `0x0801` is a cFE housekeeping packet.
+
+The generated definitions carry the cFS plugin's CCSDS items (`CCSDS_STREAMID`, `CCSDS_SEQUENCE`, `CCSDS_LENGTH`,
+`CCSDS_FC`, `CCSDS_CHECKSUM`; `SECONDS`, `SUBSECS`, `PACKET_TIME`) followed by the F Prime packet, so the CFS
+interface's `ProtocolCcsdsChecksum` and `ProtocolCcsdsLength` write protocols and `LengthProtocol` read protocol
+apply unchanged. Telemetry uses exactly the six byte secondary header `fprime_cfs` emits (no
+`SPARE_FOR_64_ALIGN`). Packets are named `<Deployment>.<F Prime name>` (for example
+`FPrimeDeployment.CfsCore.cmdDisp.CMD_NO_OP`) and no catch-all packet is added. Events remain out of scope.
+
+Telemetry identifies on `CCSDS_STREAMID` alone, like every cFS packet, because COSMOS identifies a target's
+packets by one shared set of ID items; a different set would switch the CFS target to per-packet matching, where
+the cFS plugin's file packets (no ID items) swallow everything defined after them. Hence one parent packet per
+message id — `<Deployment>.FPRIME_PACKETS` and `<Deployment>.FPRIME_CHANNELS` — carries the F Prime packet as a
+block and `fprime_subpacketizer.rb` resolves it to the `SUBPACKET` for the F Prime packet
+(`FPrimeDeployment.Health`) or channel.
+
+`--install` uploads the gem like the native tool (same `--cosmos-*` options; `--target-name` defaults to `CFS-1`).
+Without Ruby on the host the gem is still built, by the same pure-Python packager as the native plugin.
+`tests/e2e/cfs_reference.py` exercises the result against a running `fprime_cfs_reference` through COSMOS.
+
 ## What is generated
 
 All widths and constants come from the dictionary's `typeDefinitions` and `constants` (descriptor, opcode,

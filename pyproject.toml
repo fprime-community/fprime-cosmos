@@ -25,6 +25,7 @@ dev = ["pytest", "ruff", "build"]
 
 [project.scripts]
 fprime-to-cosmos = "fprime_cosmos.generate.__main__:main"
+fprime-to-cosmos-cfs = "fprime_cosmos.generate.cfs:main"
 fprime-cosmos = "fprime_cosmos.__main__:main"
 
 [project.urls]
@@ -34,7 +35,7 @@ Homepage = "https://github.com/fprime-community/fprime-cosmos"
 where = ["src"]
 
 [tool.setuptools.package-data]
-fprime_cosmos = ["plugin/**/*"]
+fprime_cosmos = ["plugin/**/*", "plugin_cfs/*"]
 
 [tool.setuptools_scm]
 fallback_version = "0.1.0.dev0"

@@ -57,20 +57,30 @@ class CosmosClient:
         return self._check(response)
 
     def authenticate(self) -> None:
-        """Exchange the password for a session token (setting the password on a fresh COSMOS if needed)"""
+        """Exchange the password for a session token (setting the password on a fresh COSMOS if needed)
+
+        COSMOS calls the password `token` in both requests (`/auth/set`, `/auth/verify`).
+        """
         if not self.password:
             raise CosmosApiError("A COSMOS password is required (--cosmos-password or OPENC3_API_PASSWORD)")
         exists = self._request("GET", "/auth/token-exists").json().get("result")
         if exists:
-            token = self._request("POST", "/auth/verify", data={"password": self.password}).text
+            token = self._request("POST", "/auth/verify", data={"token": self.password}).text
         else:
             print("[INFO] COSMOS has no password yet; setting it to the supplied password")
-            token = self._request("POST", "/auth/set", data={"password": self.password}).text
+            token = self._request("POST", "/auth/set", data={"token": self.password}).text
         self.session.headers["Authorization"] = token.strip()
 
     def plugins(self) -> list[str]:
         """Names of the plugins installed in the scope"""
         return list(self._request("GET", "/plugins").json())
+
+    def target(self, name: str) -> dict | None:
+        """Model of an installed target (including the `plugin` that installed it), or None if there is none"""
+        try:
+            return self._request("GET", f"/targets/{name}").json()
+        except CosmosApiError:
+            return None
 
     def plugin(self, name: str) -> dict:
         """Hash of an installed plugin, including its variables as COSMOS stored them"""

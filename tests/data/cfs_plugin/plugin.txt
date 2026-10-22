@@ -1,0 +1,9 @@
+# Trimmed stand-in for nasa/cfs-cosmos-plugin plugin.txt (test fixture)
+<% require 'cfs_packet_headers' %>
+VARIABLE cfs_1_intf_ip 172.17.0.1
+TARGET CFS CFS-1
+INTERFACE CFS-1_INTF udp_interface.rb <%= cfs_1_intf_ip %> 1234 2234 nil nil 128 nil nil
+    MAP_TARGET CFS-1
+    PROTOCOL WRITE ProtocolCcsdsChecksum
+    PROTOCOL WRITE ProtocolCcsdsLength
+    PROTOCOL READ LengthProtocol 32 16 7 1 BIG_ENDIAN 0 nil

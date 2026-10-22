@@ -25,6 +25,9 @@ class FakeClient:
     def authenticate(self):
         pass
 
+    def target(self, name):
+        return getattr(self, "targets", {}).get(name)
+
     def plugins(self):
         return list(self.installed)
 
@@ -64,6 +67,8 @@ def test_installed_plugin_for_target_ignores_other_targets_and_plugins():
     )
     assert install.installed_plugin_for_target(client, "FPRIME") == "openc3-cosmos-fprime-yamcs-1.0.0.222.gem__0"
     assert install.installed_plugin_for_target(client, "NONE") is None
+    client.targets = {"CFS-1": {"name": "CFS-1", "plugin": "openc3-cosmos-cfs-1.0.0.abc.gem__0"}}
+    assert install.installed_plugin_for_target(client, "CFS-1") == "openc3-cosmos-cfs-1.0.0.abc.gem__0"
 
 
 def test_ensure_installed_skips_same_digest_and_upgrades_target_owner(tmp_path):

@@ -1,0 +1,2 @@
+<%= cfs_tlm_hdr(target_name, "CFE_ES_HK_TLM", "ES housekeeping") %>
+    APPEND_ITEM CMD_COUNTER 8 UINT "Command counter"

@@ -13,9 +13,11 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
+from fprime_gds.common.loaders.json_loader import JsonLoader
 from fprime_gds.common.loaders.pkt_json_loader import PktJsonLoader
 from fprime_gds.common.models.dictionaries import Dictionaries
 from fprime_gds.common.models.serialize.enum_type import EnumType
+from fprime_gds.common.models.serialize.type_base import DictionaryType
 from fprime_gds.common.templates.ch_template import ChTemplate
 from fprime_gds.common.templates.cmd_template import CmdTemplate
 from fprime_gds.common.templates.pkt_template import PktTemplate
@@ -24,6 +26,7 @@ from fprime_gds.common.utils.config_manager import ConfigManager
 COM_PACKET_TYPE_ENUM = "Fw.ComPacketType"
 APID_ENUM = "ComCfg.Apid"
 TIME_BASE_ENUM = "TimeBase"
+CFS_FUNCTION_CODE_CONSTANT = "ComCfg.FprimeCommandFunctionCode"
 
 # Fw::ComPacketType values, used only when the dictionary does not publish the enumeration
 FALLBACK_PACKET_TYPES = {
@@ -75,11 +78,33 @@ class WireLayout:
         return self.packet_types["FW_PACKET_PACKETIZED_TLM"]
 
 
-def _type_bits(config: ConfigManager, name: str) -> int:
+class _Scope:
+    """Type and constant lookup for one dictionary: its own definitions first, then the ConfigManager defaults
+
+    ConfigManager is a process-wide singleton that accumulates the definitions of every dictionary loaded so far;
+    reading it directly would let one dictionary's constants and enumerations leak into the next.
+    """
+
+    def __init__(self, dictionaries: Dictionaries, config: ConfigManager):
+        self.types = dictionaries.typedefs_name or {}
+        self.constants = dictionaries.constant_name or {}
+        self.config = config
+
+    def get_type(self, name: str):
+        type_class = self.types.get(name)
+        return type_class if type_class is not None else self.config.get_type(name)
+
+    def get_constant(self, name: str) -> int:
+        if name in self.constants:
+            return self.constants[name]
+        return self.config.get_constant(name)
+
+
+def _type_bits(config: _Scope, name: str) -> int:
     return config.get_type(name).getMaxSize() * 8
 
 
-def _enum_values(config: ConfigManager, name: str) -> dict[str, int] | None:
+def _enum_values(config: _Scope, name: str) -> dict[str, int] | None:
     try:
         enum_type = config.get_type(name)
     except Exception:  # noqa: BLE001 - ConfigManager raises a bare Exception for unknown names
@@ -89,7 +114,13 @@ def _enum_values(config: ConfigManager, name: str) -> dict[str, int] | None:
     return dict(enum_type.ENUM_DICT)
 
 
-def _packet_types(config: ConfigManager) -> dict[str, int]:
+def _constant(config: _Scope, name: str) -> int | None:
+    """An optional constant of the dictionary itself (no ConfigManager defaults), or None"""
+    value = config.constants.get(name)
+    return None if value is None else int(value)
+
+
+def _packet_types(config: _Scope) -> dict[str, int]:
     for name in (COM_PACKET_TYPE_ENUM, APID_ENUM):
         values = _enum_values(config, name)
         if values and all(key in values for key in ("FW_PACKET_COMMAND", "FW_PACKET_TELEM")):
@@ -110,8 +141,16 @@ class FprimeDictionary:
             raise DictionaryError(f"Dictionary '{self.path}' does not exist")
         self.packet_set_name = self._select_packet_set(packet_set_name)
         try:
+            # fprime-gds registers dictionary-defined types process-wide by name, so a second dictionary would
+            # otherwise reuse (or, when the definitions differ, refuse) the first one's ComCfg.Apid and friends
+            JsonLoader.parsed_types.clear()
+            DictionaryType._CONSTRUCTS.clear()  # noqa: SLF001 - no public reset exists
             self.dictionaries = Dictionaries.load_dictionaries_into_config(str(self.path), None, self.packet_set_name)
-            self.layout = self._read_layout(ConfigManager.get_instance())
+            scope = _Scope(self.dictionaries, ConfigManager.get_instance())
+            self.layout = self._read_layout(scope)
+            # cFS hosting (fprime_cfs) derives message identifiers and the command function code from these
+            self.apids = _enum_values(scope, APID_ENUM) or {}
+            self.cfs_function_code = _constant(scope, CFS_FUNCTION_CODE_CONSTANT)
         except Exception as error:
             raise DictionaryError(f"Failed to load dictionary '{self.path}': {error}") from error
 
@@ -125,7 +164,7 @@ class FprimeDictionary:
             raise DictionaryError(f"Dictionary has multiple packet sets {names}; choose one with --packet-set-name")
         return names[0] if names else None
 
-    def _read_layout(self, config: ConfigManager) -> WireLayout:
+    def _read_layout(self, config: _Scope) -> WireLayout:
         packet_types = _packet_types(config)
         return WireLayout(
             descriptor_bits=_type_bits(config, "FwPacketDescriptorType"),
