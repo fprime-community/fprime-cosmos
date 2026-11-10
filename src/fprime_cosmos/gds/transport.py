@@ -774,8 +774,7 @@ class CosmosTransport(TransportClient):
         if EVENTS_PACKET not in {name.upper() for name in names} and getattr(self.dictionaries, "event_id", None):
             LOGGER.warning(
                 "COSMOS target %s has no %s packet; events are not delivered "
-                "(plugin generated before events were supported or from a dictionary without FW_PACKET_LOG, "
-                "or the cfs layout which has no events packet)",
+                "(plugin generated before events were supported or from a dictionary without FW_PACKET_LOG)",
                 self.target,
                 EVENTS_PACKET,
             )
