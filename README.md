@@ -182,10 +182,10 @@ exist. The transport is tested against COSMOS 7.5.1 (JSON-RPC `cmd_no_hazardous_
 newer (password-based `/openc3-api/auth/verify` and token authentication of the `StreamingChannel` subscription;
 6.10.x-7.1.x authenticate differently and are not supported by the transport, although the generated plugin itself
 installs there). Command arguments are flattened like the generator's parameters (structs
-to `NAME.MEMBER`, non-numeric arrays to `NAME[i]`, booleans and enums as state names). Events, files and data products
-are not yet modeled in COSMOS and the transport maps telemetry channels only (a file uplink attempted through it fails
-at once with an error instead of waiting for a handshake), so event assertions do not pass through
-this transport until both the generator emits an events packet and the transport decodes it. A COSMOS command
+to `NAME.MEMBER`, non-numeric arrays to `NAME[i]`, booleans and enums as state names). Events arrive through the
+generated `FPRIME_EVENTS` packet (the opaque F Prime event record, decoded by the fprime-gds event decoder, so event
+assertions see native events); files and data products are not modeled (a file uplink attempted through the
+transport fails at once with an error instead of waiting for a handshake); the cFS layout has no events packet yet. A COSMOS command
 rejection is raised to the caller (the test fails); a target without telemetry packets, a refused password or a
 rejected first subscription fails `connect()` at once; afterwards, after three
 consecutive subscription rejections (before or after COSMOS confirmed the subscription, a non-reconnectable

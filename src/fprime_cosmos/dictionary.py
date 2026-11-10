@@ -71,6 +71,10 @@ class WireLayout:
         return self.packet_types["FW_PACKET_TELEM"]
 
     @property
+    def log_descriptor(self) -> int:
+        return self.packet_types["FW_PACKET_LOG"]
+
+    @property
     def packetized_descriptor(self) -> int:
         return self.packet_types["FW_PACKET_PACKETIZED_TLM"]
 

@@ -789,6 +789,11 @@ TELEMETRY <%= target_name %> Version_Custom10 BIG_ENDIAN "F Prime packetized tel
     STATE FAILURE 1
     META FPRIME_TYPE "Svc.VersionStatus"
 
+TELEMETRY <%= target_name %> FPRIME_EVENTS BIG_ENDIAN "F Prime event record (opaque; decoded by the fprime-gds event decoder)"
+  APPEND_ID_ITEM FPRIME_DESCRIPTOR 16 UINT 2 "F Prime packet descriptor"
+    META FPRIME_TYPE "FwPacketDescriptorType"
+  APPEND_ITEM RECORD 0 BLOCK "Event id, time and arguments as serialized by F Prime"
+
 TELEMETRY <%= target_name %> FPRIME_UNKNOWN BIG_ENDIAN "F Prime packets not handled by this plugin (events, files, data products)"
   CATCHALL
   APPEND_ITEM FPRIME_DESCRIPTOR 16 UINT "F Prime packet descriptor"

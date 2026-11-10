@@ -624,6 +624,40 @@ class TestStreamDecoding:
         assert (second.seconds, second.useconds) == (1_700_000_000, 500_000)
         assert caplog.text.count("is not in the loaded dictionary") == 1
 
+    def test_event_record_packet_is_decoded_by_the_gds_event_decoder(self, dictionaries):
+        from fprime_gds.common.decoders.event_decoder import EventDecoder
+        from fprime_gds.common.models.serialize.numerical_types import U32Type
+
+        template = next(t for t in dictionaries.event_id.values() if not t.get_args())
+        decoder = EventDecoder(dictionaries.event_id)
+        decoder.send_to_all = MagicMock()
+        client = CosmosTransport(cosmos_url="http://c", cosmos_target="FPRIME")
+        client.set_pipeline_references(dictionaries, MagicMock(), decoder)
+        client._index_channels()
+        time_obj = TimeType(time_base=TimeType.TimeBase("TB_WORKSTATION_TIME"), seconds=1234, useconds=5678)
+        record = U32Type(template.get_id()).serialize() + time_obj.serialize()
+        packet = {"__time": STREAM_TIME, "__type": "PACKET", "__packet": "DECOM__TLM__FPRIME__FPRIME_EVENTS__CONVERTED"}
+        packet.update(COSMOS_DERIVED)
+        packet.update({"FPRIME_DESCRIPTOR": 2, "RECORD": {"json_class": "String", "raw": list(record)}})
+        client._on_packet(packet)
+        client._on_packet({**packet, "RECORD": list(record)})
+        events = [call.args[0] for call in decoder.send_to_all.call_args_list]
+        assert [e.template.get_full_name() for e in events] == [template.get_full_name()] * 2
+        assert (events[0].get_time().seconds, events[0].get_time().useconds) == (1234, 5678)
+        assert client.channel_decoder.send_to_all.call_count == 0  # an event packet never becomes a channel
+
+    def test_events_packet_is_subscribed_but_not_a_channel(self, client, monkeypatch):
+        monkeypatch.setenv(PASSWORD_ENV, "pw")
+        fake_api = MagicMock()
+        fake_api.call.return_value = ["CDHCORE.CMDDISP.COMMANDERRORS", "FPRIME_EVENTS", "FPRIME_UNKNOWN"]
+        with (
+            patch.object(transport, "CosmosApi", return_value=fake_api),
+            patch.object(transport, "StreamingSocket") as s,
+        ):
+            client.connect()
+        assert "DECOM__TLM__FPRIME__FPRIME_EVENTS__CONVERTED" in s.call_args.args[3]
+        assert "DECOM__TLM__FPRIME__FPRIME_UNKNOWN__CONVERTED" not in s.call_args.args[3]
+
     def test_null_value_is_not_delivered(self, client, caplog):
         with caplog.at_level(logging.WARNING, logger="cosmos_transport"):
             client._on_packet(

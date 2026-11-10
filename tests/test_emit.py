@@ -140,3 +140,12 @@ def test_channel_modifiers_limits_default_to_type_range_and_neighbouring_bound()
     assert emit._channel_modifiers(StubChannel("{}"), item) == []
     enum_item = CosmosItem("V", 8, "UINT", states=(("A", 0),))
     assert emit._channel_modifiers(StubChannel("{:d}"), enum_item) == []
+
+
+def test_events_packet_precedes_the_catch_all(reference_dictionary):
+    layout = reference_dictionary.layout
+    text = emit.emit_packets(reference_dictionary)
+    assert 0 < text.index("FPRIME_EVENTS") < text.index("FPRIME_UNKNOWN")
+    block = "\n".join(emit.emit_events_packet(layout))
+    assert f"APPEND_ID_ITEM FPRIME_DESCRIPTOR {layout.descriptor_bits} UINT {layout.log_descriptor}" in block
+    assert "APPEND_ITEM RECORD 0 BLOCK" in block

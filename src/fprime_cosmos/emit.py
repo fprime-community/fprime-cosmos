@@ -25,6 +25,8 @@ from fprime_cosmos.items import CosmosItem, flatten
 TARGET = "<%= target_name %>"
 CHANNELIZED_PACKET = "FPRIME_CHANNELS"
 UNKNOWN_PACKET = "FPRIME_UNKNOWN"
+EVENTS_PACKET = "FPRIME_EVENTS"
+EVENT_RECORD_ITEM = "RECORD"
 CHANNELS_BLOCK = "CHANNELS"
 DESCRIPTOR_ITEM = "FPRIME_DESCRIPTOR"
 OPCODE_ITEM = "FPRIME_OPCODE"
@@ -242,6 +244,22 @@ def emit_channelized_parent(layout: WireLayout) -> list[str]:
     return lines
 
 
+def emit_events_packet(layout: WireLayout) -> list[str]:
+    """Opaque F Prime event record: the GDS event decoder (through the ``cosmos`` data transport) decodes it exactly
+
+    Identified by the log descriptor; everything after it (event id, time, arguments) stays one BLOCK so no text
+    reconstruction is needed. Must be emitted before the catch-all.
+    """
+    descriptor = _descriptor_item(layout)
+    description = quote("F Prime event record (opaque; decoded by the fprime-gds event decoder)")
+    lines = [f"TELEMETRY {TARGET} {EVENTS_PACKET} BIG_ENDIAN {description}"]
+    lines.extend(_item_lines(descriptor, layout.log_descriptor))
+    lines.append(
+        f"  APPEND_ITEM {EVENT_RECORD_ITEM} 0 BLOCK {quote('Event id, time and arguments as serialized by F Prime')}"
+    )
+    return lines
+
+
 def emit_unknown_packet(layout: WireLayout) -> list[str]:
     """The CATCHALL packet; it must be defined after every identified packet, COSMOS tries packets in order"""
     descriptor = _descriptor_item(layout)
@@ -282,5 +300,6 @@ def emit_packets(dictionary: FprimeDictionary) -> str:
     blocks = [header(dictionary)]
     for packet in dictionary.packets:
         blocks.append("\n".join(emit_packet(packet, dictionary.layout)) + "\n")
+    blocks.append("\n".join(emit_events_packet(dictionary.layout)) + "\n")
     blocks.append("\n".join(emit_unknown_packet(dictionary.layout)) + "\n")
     return "\n".join(blocks)

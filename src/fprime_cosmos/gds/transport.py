@@ -44,6 +44,8 @@ from fprime_cosmos.emit import (
     CHANNEL_ID_ITEM,
     CHANNELIZED_PACKET,
     DESCRIPTOR_ITEM,
+    EVENT_RECORD_ITEM,
+    EVENTS_PACKET,
     OPCODE_ITEM,
     PACKET_ID_ITEM,
     TIME_ITEM,
@@ -744,7 +746,7 @@ class CosmosTransport(TransportClient):
                 }
             except DictionaryError as error:
                 raise CosmosTransportError(f"Dictionary name not usable in COSMOS: {error}") from error
-            wanted = set(self._packet_channels) | packet_names
+            wanted = set(self._packet_channels) | packet_names | {EVENTS_PACKET}
             unmatched = [name for name in names if name.upper() not in wanted | skipped]
             names = [name for name in names if name.upper() in wanted]
             if unmatched:
@@ -760,6 +762,24 @@ class CosmosTransport(TransportClient):
                     "was the plugin generated from this dictionary?"
                 )
         return [f"DECOM__TLM__{self.target}__{name}__CONVERTED" for name in names if name.upper() not in skipped]
+
+    def _on_event_record(self, items: dict[str, Any]):
+        """Hand the opaque F Prime event record (id, time, arguments) to the pipeline's event decoder"""
+        record = items.get(EVENT_RECORD_ITEM)
+        if isinstance(record, dict):  # COSMOS form of a binary BLOCK
+            record = record.get("raw")
+        if not isinstance(record, (list, bytes, bytearray)) or self.event_decoder is None:
+            if "events" not in self._failed_channels:
+                self._failed_channels.add("events")
+                LOGGER.warning("COSMOS %s packet carries no usable %s block", EVENTS_PACKET, EVENT_RECORD_ITEM)
+            return
+        try:
+            decoded = self.event_decoder.decode_api(bytes(record))
+        except Exception as exc:
+            LOGGER.warning("Cannot decode F Prime event record from COSMOS: %s", exc)
+            return
+        for event in decoded if isinstance(decoded, list) else ([decoded] if decoded is not None else []):
+            self.event_decoder.send_to_all(event)
 
     def _channels_in(self, packet_name: str | None, items: dict[str, Any]) -> list[tuple[Any, str]]:
         """(channel template, item-name root) pairs carried by one streamed packet"""
@@ -812,6 +832,9 @@ class CosmosTransport(TransportClient):
 
     def _on_packet(self, packet: dict):
         packet_name, items = split_stream_packet(packet)
+        if packet_name and packet_name.upper() == EVENTS_PACKET:
+            self._on_event_record(items)
+            return
         ch_time = self._packet_time(items)
         for template, root in self._channels_in(packet_name, items):
             try:
