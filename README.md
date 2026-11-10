@@ -187,9 +187,11 @@ generated `FPRIME_EVENTS` packet (the opaque F Prime event record, decoded by th
 assertions see native events). No event is delivered when the COSMOS target has no `FPRIME_EVENTS` packet — a plugin
 installed from an earlier `fprime-cosmos` (regenerate and reinstall it: run the launcher or `fprime-to-cosmos --install`),
 a dictionary without `FW_PACKET_LOG`, or `--cosmos-layout cfs` (the cFS generator has no events packet yet):
-`connect()` still succeeds, the transport logs a warning and event assertions time out. Files and data products are
-not modeled (a file uplink attempted through the transport fails at once with an error instead of waiting for a
-handshake). A COSMOS command
+`connect()` still succeeds, the transport logs a warning and event assertions time out. An event record the
+fprime-gds event decoder cannot decode (for example an event id the loaded dictionary does not define) is dropped:
+each failure cause is warned about once as it happens (at most 16 causes), and the number of further dropped records
+per cause is logged at `disconnect()`. Files and data products are not modeled (a file uplink attempted through the
+transport fails at once with an error instead of waiting for a handshake). A COSMOS command
 rejection is raised to the caller (the test fails); a target without telemetry packets, a refused password or a
 rejected first subscription fails `connect()` at once; afterwards, after three
 consecutive subscription rejections (before or after COSMOS confirmed the subscription, a non-reconnectable

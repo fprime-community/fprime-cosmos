@@ -59,7 +59,9 @@ from fprime_cosmos.emit import (
 from fprime_cosmos.items import BOOL_STATES
 
 LOGGER = logging.getLogger("cosmos_transport")
-MAX_WARNED_EVENT_FAILURES = 16  # distinct event-decoding failure causes reported per transport
+MAX_WARNED_EVENT_FAILURES = (
+    16  # distinct event-decoding failure causes warned about as they happen; more are only counted
+)
 
 COSMOS_URI_SCHEME = "cosmos://"
 COSMOS_SECURE_URI_SCHEME = "cosmos+https://"
@@ -518,6 +520,7 @@ class CosmosTransport(TransportClient):
         self._channel_index: dict[str, Any] = {}
         self._packet_channels: dict[str, Any] = {}
         self._failed_channels: set[str] = set()
+        self._warned_event_failures: set[str] = set()
         self._suppressed_event_failures: dict[str, int] = {}
         self._pending_commands = 0
 
@@ -665,15 +668,16 @@ class CosmosTransport(TransportClient):
             raise CosmosTransportError("the installed 'websocket' module is not websocket-client")
 
     def disconnect(self):
-        for key, count in self._suppressed_event_failures.items():
-            LOGGER.warning("%d further F Prime event record(s) from COSMOS failed: %s", count, key[len("event:") :])
-        self._suppressed_event_failures.clear()
         if self.stream is not None:
             self.stream.stop()
             self.stream = None
         if self.api is not None:
             self.api.session.close()
             self.api = None
+        # the stream thread is joined: nothing writes the counters any more
+        suppressed, self._suppressed_event_failures = self._suppressed_event_failures, {}
+        for key, count in suppressed.items():
+            LOGGER.warning("%d F Prime event record(s) from COSMOS dropped: %s", count, key)
 
     def send(self, data):
         """Encoded GDS packets: the echo of a command just issued through the cmd API is expected, anything else
@@ -808,17 +812,19 @@ class CosmosTransport(TransportClient):
         try:
             self.event_decoder.data_callback(bytes(record))  # decode_api, then every registered consumer
         except Exception as exc:
-            # one line per failure cause: digits (event ids, sizes, offsets) are folded so remote data cannot grow the
-            # set, and the number of causes is capped; what was silenced is accounted for in disconnect()
-            key = "event:" + re.sub(r"\d+", "N", f"{type(exc).__name__}: {exc}")[:96]
-            warned = {k for k in self._failed_channels if k.startswith("event:")}
+            # one line per failure cause: numbers (ids, sizes, offsets, bad bytes) are folded so remote data cannot
+            # grow the set, and the number of causes is capped; what was silenced is accounted for in disconnect()
+            key = re.sub(r"0x[0-9a-fA-F]+|\d+", "N", f"{type(exc).__name__}: {exc}")[:96]
+            warned = self._warned_event_failures
             if key in warned or len(warned) >= MAX_WARNED_EVENT_FAILURES:
+                if key not in warned:
+                    key = "other causes"  # past the cap: counted together so the dict stays bounded too
                 self._suppressed_event_failures[key] = self._suppressed_event_failures.get(key, 0) + 1
             else:
-                self._failed_channels.add(key)
+                warned.add(key)
                 LOGGER.warning(
-                    "Cannot decode or deliver F Prime event record from COSMOS (repeats of this cause are silent): "
-                    "%s: %s",
+                    "Cannot decode or deliver F Prime event record from COSMOS (repeats of this cause are counted "
+                    "and reported at disconnect): %s: %s",
                     type(exc).__name__,
                     exc,
                 )
