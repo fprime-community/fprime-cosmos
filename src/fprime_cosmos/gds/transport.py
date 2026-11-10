@@ -21,6 +21,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -58,6 +59,7 @@ from fprime_cosmos.emit import (
 from fprime_cosmos.items import BOOL_STATES
 
 LOGGER = logging.getLogger("cosmos_transport")
+MAX_WARNED_EVENT_FAILURES = 16  # distinct event-decoding failure causes reported per transport
 
 COSMOS_URI_SCHEME = "cosmos://"
 COSMOS_SECURE_URI_SCHEME = "cosmos+https://"
@@ -516,6 +518,7 @@ class CosmosTransport(TransportClient):
         self._channel_index: dict[str, Any] = {}
         self._packet_channels: dict[str, Any] = {}
         self._failed_channels: set[str] = set()
+        self._suppressed_event_failures: dict[str, int] = {}
         self._pending_commands = 0
 
     # ---- plugin contract -------------------------------------------------------------------------------------------
@@ -662,6 +665,9 @@ class CosmosTransport(TransportClient):
             raise CosmosTransportError("the installed 'websocket' module is not websocket-client")
 
     def disconnect(self):
+        for key, count in self._suppressed_event_failures.items():
+            LOGGER.warning("%d further F Prime event record(s) from COSMOS failed: %s", count, key[len("event:") :])
+        self._suppressed_event_failures.clear()
         if self.stream is not None:
             self.stream.stop()
             self.stream = None
@@ -748,7 +754,9 @@ class CosmosTransport(TransportClient):
         skipped = {CHANNELIZED_PACKET, UNKNOWN_PACKET}
         if EVENTS_PACKET not in {name.upper() for name in names} and getattr(self.dictionaries, "event_id", None):
             LOGGER.warning(
-                "COSMOS target %s has no %s packet; events are not delivered (regenerate the plugin?)",
+                "COSMOS target %s has no %s packet; events are not delivered "
+                "(plugin generated before events were supported or from a dictionary without FW_PACKET_LOG, "
+                "or the cfs layout which has no events packet)",
                 self.target,
                 EVENTS_PACKET,
             )
@@ -785,24 +793,32 @@ class CosmosTransport(TransportClient):
             record = record.get("raw")
         if isinstance(record, str):  # COSMOS sends a BLOCK that happens to be valid UTF-8 as plain text
             record = record.encode("utf-8", errors="surrogatepass")  # a lone surrogate is just an undecodable record
-        if not isinstance(record, (list, bytes, bytearray)) or len(record) < 4 or self.event_decoder is None:
-            if "events" not in self._failed_channels:
-                self._failed_channels.add("events")
-                cause = (
-                    "no event decoder is attached"
-                    if self.event_decoder is None
-                    else f"no usable {EVENT_RECORD_ITEM} block"
-                )
+        if self.event_decoder is None:
+            key, cause = "events:no-decoder", "no event decoder is attached"
+        elif not isinstance(record, (list, bytes, bytearray)) or len(record) < self.event_decoder.id_obj.getSize():
+            # shorter than the dictionary's FwEventIdType: the decoder could not even name the event
+            key, cause = "events:no-block", f"no usable {EVENT_RECORD_ITEM} block"
+        else:
+            key = None
+        if key is not None:
+            if key not in self._failed_channels:
+                self._failed_channels.add(key)
                 LOGGER.warning("COSMOS %s packet dropped: %s", EVENTS_PACKET, cause)
             return
         try:
             self.event_decoder.data_callback(bytes(record))  # decode_api, then every registered consumer
         except Exception as exc:
-            key = f"event:{type(exc).__name__}"  # one line per failure kind, not per remote-chosen event id
-            if key not in self._failed_channels:
+            # one line per failure cause: digits (event ids, sizes, offsets) are folded so remote data cannot grow the
+            # set, and the number of causes is capped; what was silenced is accounted for in disconnect()
+            key = "event:" + re.sub(r"\d+", "N", f"{type(exc).__name__}: {exc}")[:96]
+            warned = {k for k in self._failed_channels if k.startswith("event:")}
+            if key in warned or len(warned) >= MAX_WARNED_EVENT_FAILURES:
+                self._suppressed_event_failures[key] = self._suppressed_event_failures.get(key, 0) + 1
+            else:
                 self._failed_channels.add(key)
                 LOGGER.warning(
-                    "Cannot decode or deliver F Prime event record from COSMOS (repeats are silent): %s: %s",
+                    "Cannot decode or deliver F Prime event record from COSMOS (repeats of this cause are silent): "
+                    "%s: %s",
                     type(exc).__name__,
                     exc,
                 )

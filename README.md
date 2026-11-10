@@ -229,6 +229,9 @@ channel and packet identifier types, `FwSizeStoreType` string lengths, boolean e
   (`Fw.ComPacketType`, else `ComCfg.Apid`, else the built-in fallback) has no `FW_PACKET_LOG`).
 - `FPRIME_UNKNOWN` (last in `packets.txt`) catches packets the plugin does not model (files, data products).
 
+`FPRIME_CHANNELS`, `FPRIME_EVENTS` and `FPRIME_UNKNOWN` are reserved: a dictionary telemetry packet of one of these
+names (in any case) is refused by the generator and by the `cosmos` data transport.
+
 ## Development
 
 ```bash
