@@ -32,6 +32,7 @@ from fprime_cosmos.gds.transport import (
     CosmosTransport,
     CosmosTransportError,
     StreamingSocket,
+    SubscriptionRejectedError,
     assemble_value,
     build_value_object,
     coerce_scalar,
@@ -648,6 +649,22 @@ class TestStreamDecoding:
             "TB_WORKSTATION_TIME",
         )
 
+    def test_out_of_range_fprime_time_keeps_the_packet_with_the_receive_time(self, client, caplog):
+        items = {
+            "FPRIME_TIME_BASE": "TB_SC_TIME",
+            "FPRIME_TIME_CONTEXT": 0,
+            "FPRIME_TIME_SECONDS": 5,
+            "FPRIME_TIME_USECONDS": 2_000_000,
+        }
+        with caplog.at_level(logging.WARNING, logger="cosmos_transport"):
+            time_obj = client._packet_time({**items, "__time": 1_700_000_000_500_000_000})
+        assert (time_obj.seconds, time_obj.useconds, time_obj.timeBase.val) == (
+            1_700_000_000,
+            500_000,
+            "TB_WORKSTATION_TIME",
+        )
+        assert caplog.text == ""  # a known base with a bad value is not reported as an unknown base
+
     def test_non_finite_floats_arrive_in_cosmos_float_form(self):
         from fprime_gds.common.models.serialize.numerical_types import F64Type
 
@@ -706,20 +723,45 @@ class TestApi:
         assert SECRET not in api.cable_url() and SECRET not in api.url
 
     @pytest.mark.parametrize(
-        "get, post, message",
+        "get, post, message, kind",
         [
-            (requests.ConnectionError("refused"), None, "Cannot reach COSMOS"),
-            (FakeResponse(payload={"result": False}), None, "no password set"),
-            (FakeResponse(status=503, payload={}), None, r"failed \(503\)"),
-            (FakeResponse(payload={"result": True}), requests.Timeout("slow"), "Cannot reach COSMOS"),
-            (FakeResponse(payload={"result": True}), FakeResponse(status=401, text="nope"), r"failed \(401\)"),
-            (FakeResponse(payload={"result": True}), FakeResponse(text=" \n"), "rejected the password"),
-            (FakeResponse(status=302, text=""), None, r"failed \(302\)"),
-            (FakeResponse(payload={"result": True}), FakeResponse(status=307, text=""), r"failed \(307\)"),
-            (FakeResponse(status=200, text="<html>login</html>"), None, "did not answer as a COSMOS"),
+            (requests.ConnectionError("refused"), None, "Cannot reach COSMOS", transport.CosmosUnreachableError),
+            (FakeResponse(payload={"result": False}), None, "no password set", CosmosTransportError),
+            (FakeResponse(status=503, payload={}), None, r"failed \(503\)", transport.CosmosUnreachableError),
+            (
+                FakeResponse(payload={"result": True}),
+                requests.Timeout("slow"),
+                "Cannot reach",
+                transport.CosmosUnreachableError,
+            ),
+            (
+                FakeResponse(payload={"result": True}),
+                FakeResponse(status=401, text="nope"),
+                r"failed \(401\)",
+                CosmosTransportError,
+            ),
+            (
+                FakeResponse(payload={"result": True}),
+                FakeResponse(text=" \n"),
+                "rejected the password",
+                CosmosTransportError,
+            ),
+            (FakeResponse(status=302, text=""), None, r"failed \(302\)", CosmosTransportError),
+            (
+                FakeResponse(payload={"result": True}),
+                FakeResponse(status=307, text=""),
+                r"failed \(307\)",
+                CosmosTransportError,
+            ),
+            (
+                FakeResponse(status=200, text="<html>login</html>"),
+                None,
+                "did not answer as a COSMOS",
+                CosmosTransportError,
+            ),
         ],
     )
-    def test_authenticate_failures_are_reported_without_the_password(self, get, post, message):
+    def test_authenticate_failures_are_reported_without_the_password(self, get, post, message, kind):
         api = CosmosApi("http://cosmos:2900", "DEFAULT", SECRET)
         api.session = MagicMock()
         api.session.headers = {}
@@ -727,6 +769,7 @@ class TestApi:
         api.session.post.side_effect = [post]
         with pytest.raises(CosmosTransportError, match=message) as info:
             api.authenticate()
+        assert type(info.value) is kind  # unreachable vs. refused decides whether the stream charges its auth budget
         assert SECRET not in str(info.value)
         assert api.token in (None, "") and "Authorization" not in api.session.headers
 
@@ -768,6 +811,27 @@ class TestApi:
         ]
         api.session.post.side_effect = [FakeResponse(status=401, text="expired"), FakeResponse(status=401, text="no")]
         with pytest.raises(CosmosTransportError, match=r"failed \(401\)"):
+            api.call("get_cmd_cnt", "FPRIME", "X")
+
+    def test_call_does_not_reauthenticate_on_403_or_without_a_password(self):
+        api = CosmosApi("http://cosmos", "DEFAULT", SECRET)
+        api.session = MagicMock()
+        api.session.post.return_value = FakeResponse(status=403, text="forbidden")
+        with pytest.raises(CosmosTransportError, match=r"failed \(403\)"):
+            api.call("cmd_no_hazardous_check", "FPRIME", "X", {})
+        assert api.session.post.call_count == 1 and not api.session.get.called
+        api = CosmosApi("http://cosmos", "DEFAULT", None)
+        api.session = MagicMock()
+        api.session.post.return_value = FakeResponse(status=401, text="expired")
+        with pytest.raises(CosmosTransportError, match=r"failed \(401\)"):
+            api.call("get_cmd_cnt", "FPRIME", "X")
+        assert api.session.post.call_count == 1 and not api.session.get.called
+
+    def test_call_unreachable_is_classified(self):
+        api = CosmosApi("http://cosmos", "DEFAULT", SECRET)
+        api.session = MagicMock()
+        api.session.post.side_effect = requests.ConnectionError("refused")
+        with pytest.raises(transport.CosmosUnreachableError, match="Cannot reach COSMOS"):
             api.call("get_cmd_cnt", "FPRIME", "X")
 
     def test_call_does_not_follow_redirects(self):
@@ -1145,20 +1209,22 @@ class TestStreamingSocket:
         assert "Cannot reach COSMOS" in caplog.text and "giving up" not in caplog.text
 
     def test_non_reconnectable_disconnect_before_confirmation_counts_as_a_rejection(self, stream_factory, caplog):
+        """First socket confirms then drops; later sockets reject the subscribe with a non-reconnectable disconnect"""
         sockets = []
         tokens = []
 
         def create(*_args, **_kwargs):
-            fake = FakeSocket([])
-            fake.send = lambda text, fake=fake: (
-                fake.sent.append(json.loads(text))
-                or fake.frames.extend(
-                    [
-                        json.dumps({"type": "welcome"}),
-                        json.dumps({"type": "disconnect", "reason": "unauthorized", "reconnect": False}),
-                    ]
+            fake = FakeSocket([json.dumps({"type": "disconnect", "reason": "restart"})] if not sockets else [])
+            if sockets:
+                fake.send = lambda text, fake=fake: (
+                    fake.sent.append(json.loads(text))
+                    or fake.frames.extend(
+                        [
+                            json.dumps({"type": "welcome"}),
+                            json.dumps({"type": "disconnect", "reason": "unauthorized", "reconnect": False}),
+                        ]
+                    )
                 )
-            )
             sockets.append(fake)
             return fake
 
@@ -1171,10 +1237,13 @@ class TestStreamingSocket:
             patch("websocket.create_connection", side_effect=create),
             patch.object(transport, "RECONNECT_DELAY_SECONDS", 0.01),
             caplog.at_level(logging.WARNING, logger="cosmos_transport"),
-            pytest.raises(CosmosTransportError, match="unauthorized"),
         ):
             stream.start()
-        assert len(sockets) == 1 and stream._thread is None
+            assert wait_for(lambda: stream.failure is not None)
+        assert isinstance(stream.failure, SubscriptionRejectedError) and "unauthorized" in str(stream.failure)
+        assert len(sockets) == 1 + transport.MAX_AUTH_FAILURES
+        assert len(tokens) == transport.MAX_AUTH_FAILURES  # a fresh token before every retry, none after giving up
+        assert "giving up on telemetry" in caplog.text
 
     @pytest.mark.parametrize(
         "marker, message", [([], "complete marker"), ({"__openc3_cable__": "resubscribe"}, "resubscribe")]
@@ -1214,26 +1283,38 @@ class TestStreamingSocket:
             return sockets[-1]
 
         stream = stream_factory("ws://c", lambda: "tok", "DEFAULT", [], lambda p: None)
+        delays = []
+        original_wait = stream._stop.wait
         with (
             patch("websocket.create_connection", side_effect=create),
             patch.object(transport, "RECONNECT_DELAY_SECONDS", 0.01),
+            patch.object(stream._stop, "wait", side_effect=lambda d: delays.append(d) or original_wait(d)),
         ):
             stream.start()
             if expect_failure:
                 assert wait_for(lambda: stream.failure is not None)
                 assert len(sockets) == 4  # confirmed, rejected, rejected, ping-only then the third rejection
+                assert delays[:3] == [0.01, 0.02, 0.04]  # the ping-only socket did not reset the backoff either
             else:
                 assert wait_for(lambda: len(sockets) >= 6)
                 assert stream.failure is None
+                assert delays[:4] == [0.01, 0.02, 0.01, 0.02]  # the delivered packet reset the backoff
             stream.stop()
 
     def test_pings_keep_the_stream_alive(self, stream_factory):
         class PingingSocket(FakeSocket):
+            reads = 0
+
             def recv(self):
-                if not self.frames and not self.closed.is_set():
-                    threading.Event().wait(0.01)
-                    return json.dumps({"type": "ping"})
-                return super().recv()
+                import websocket
+
+                if self.frames or self.closed.is_set():
+                    return super().recv()
+                self.reads += 1
+                if self.reads % 2:
+                    raise websocket.WebSocketTimeoutException()  # a read timeout between pings, as in production
+                threading.Event().wait(0.02)
+                return json.dumps({"type": "ping"})
 
         sockets = []
 
@@ -1249,7 +1330,7 @@ class TestStreamingSocket:
             stream.start()
             threading.Event().wait(0.3)
             stream.stop()
-        assert len(sockets) == 1
+        assert len(sockets) == 1 and sockets[0].reads > 10
 
     def test_handshake_socket_errors_are_transport_errors(self, stream_factory):
         stream = stream_factory("ws://c", lambda: "tok-s0ck", "DEFAULT", [], lambda p: None)
@@ -1349,6 +1430,7 @@ class TestConnectLifecycle:
             "FPRIME_CHANNELS",
             "FPRIME_UNKNOWN",
             "SOMETHING_ELSE",
+            "CDH",  # a packet-set packet of the dictionary
         ]
         fake_api.cable_url.return_value = "ws://cosmos:2900/openc3-api/cable?scope=DEFAULT"
         fake_stream = MagicMock()
@@ -1367,6 +1449,7 @@ class TestConnectLifecycle:
         assert args[3] == [
             "DECOM__TLM__FPRIME__CDHCORE.CMDDISP.COMMANDSDISPATCHED__CONVERTED",
             "DECOM__TLM__FPRIME__CDHCORE.CMDDISP.COMMANDERRORS__CONVERTED",
+            "DECOM__TLM__FPRIME__CDH__CONVERTED",
         ]
         assert "1 COSMOS packet(s) of target FPRIME are not in the dictionary" in caplog.text
         assert "SOMETHING_ELSE" in caplog.text and ", ..." not in caplog.text

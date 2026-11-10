@@ -123,15 +123,16 @@ def redact_url(url: str) -> str:
 class CosmosNaming:
     """Maps F Prime dictionary names onto the COSMOS packet/item/parameter names of one plugin layout
 
-    ``fprime`` (this package's generator, ``fprime_cosmos.emit``): one telemetry packet per channel named after the
-    channel's full name whose value items start at the channel leaf name (``CommandsDispatched``); packet-set packets
-    and the cFS ``cfs`` layout (one-app-one-target generator) spell the full dotted name instead
-    (``CfsCore.cmdDisp.CommandsDispatched`` -> ``CFSCORE.CMDDISP.COMMANDSDISPATCHED``, inside ``HEALTH`` or a
-    per-channel packet). Commands are named after the dictionary full name with parameters named after the arguments
-    in both layouts. COSMOS upper-cases packet, item and parameter names, so those are compared upper-cased here; the
-    command name is sent as spelled in the dictionary and upper-cased by COSMOS itself. The ``cfs`` command form is
-    taken from the one-app-one-target generator's documentation and is not exercised
-    live by this package's tests.
+    Both generators build one telemetry packet per channel whose value items start at the channel leaf name
+    (``COMMANDSDISPATCHED``) and spell the full dotted name (``CFSCORE.CMDDISP.COMMANDSDISPATCHED``) only inside
+    packet-set packets such as ``HEALTH``. ``fprime`` (this package's generator, ``fprime_cosmos.emit``) names the
+    per-channel packet after the channel's full name, so such a packet is also resolved by its name; ``cfs`` (the
+    one-app-one-target cFS generator) has no per-channel packet naming the transport relies on, so its per-channel
+    packets are resolved by their ``FPRIME_CHANNEL_ID`` item only and the whole target is subscribed. Commands are
+    named after the dictionary full name with parameters named after the arguments in both layouts. COSMOS
+    upper-cases packet, item, parameter and state names, so those are compared upper-cased here; the command name is
+    sent as spelled in the dictionary and upper-cased by COSMOS itself. The ``cfs`` layout is checked against that
+    generator's source by unit tests only and is not exercised live by this package's tests.
     """
 
     def __init__(self, layout: str):
@@ -276,11 +277,16 @@ class CosmosApi:
 class StreamingSocket:
     """ActionCable client for the cmd-tlm-api StreamingChannel (DECOM packets) on a background thread
 
-    Reconnects with exponential backoff (``RECONNECT_DELAY_SECONDS`` .. ``RECONNECT_DELAY_MAX_SECONDS``);
-    ``token_provider`` is called for a fresh token whenever COSMOS rejects the subscription (expired token), and after
-    ``MAX_AUTH_FAILURES`` consecutive rejections the thread gives up (``failure`` is set, an ERROR is logged) rather
-    than re-sending the password forever. A packet callback that raises is logged once per packet name and skipped
-    without dropping the subscription.
+    The first subscription is made synchronously by ``start()`` (so ``connect()`` fails loudly); afterwards a lost
+    socket, a ``disconnect`` frame, COSMOS's end-of-stream signals (``[]`` complete marker, ``resubscribe``) and
+    ``STREAM_IDLE_TIMEOUT_SECONDS`` without a frame all reconnect with exponential backoff
+    (``RECONNECT_DELAY_SECONDS`` .. ``RECONNECT_DELAY_MAX_SECONDS``). A rejected subscription (before or after
+    confirmation, a ``disconnect`` with ``reconnect: false``, an ``{"error": ...}`` frame or a password the
+    cmd-tlm-api refuses) clears the token so ``token_provider`` is asked for a fresh one, and after
+    ``MAX_AUTH_FAILURES`` such rejections without a delivered packet in between the thread gives up (``failure`` is
+    set, an ERROR is logged) rather than re-sending the password forever; an unreachable COSMOS
+    (``CosmosUnreachableError``) retries without counting. A packet callback that raises is logged once per packet
+    name and skipped without dropping the subscription.
     """
 
     def __init__(
@@ -826,7 +832,8 @@ class CosmosTransport(TransportClient):
     def _packet_time(self, items: dict[str, Any]) -> TimeType:
         """F Prime time from the FPRIME_TIME_* items, else the COSMOS receive time (workstation time base)
 
-        A time-base label fprime-gds does not know (project-specific ``TimeBase`` enum) is reported once and the time is
+        The label is resolved through the ``TimeBase`` enum of the loaded dictionary (so project-specific bases work);
+        a label absent from it (a COSMOS plugin generated from another dictionary) is reported once and the time is
         kept with the workstation base rather than dropped.
         """
         base = items.get("FPRIME_TIME_BASE")
@@ -839,7 +846,7 @@ class CosmosTransport(TransportClient):
             else:
                 try:
                     time_base = time_base_from_label(base) if isinstance(base, str) else int(base)
-                    return TimeType(time_base=time_base, time_context=context, seconds=seconds, useconds=useconds)
+                    TimeType(time_base=time_base)  # validates the base alone
                 except Exception as exc:
                     key = f"time base {base!r}"
                     if key not in self._failed_channels:
@@ -850,12 +857,11 @@ class CosmosTransport(TransportClient):
                             exc,
                             TIME_BASE_WORKSTATION,
                         )
-                    return TimeType(
-                        time_base=TimeType.TimeBase(TIME_BASE_WORKSTATION),
-                        time_context=context,
-                        seconds=seconds,
-                        useconds=useconds,
-                    )
+                    time_base = TimeType.TimeBase(TIME_BASE_WORKSTATION)
+                try:
+                    return TimeType(time_base=time_base, time_context=context, seconds=seconds, useconds=useconds)
+                except Exception as exc:  # out-of-range seconds/useconds/context: keep the packet, use the receive time
+                    LOGGER.debug("F Prime time out of range (%s); using the receive time", exc)
         received = items.get("__time")
         try:
             nanoseconds = int(received)
@@ -952,7 +958,8 @@ def time_base_from_label(label: str):
 def coerce_scalar(value: Any, type_class: type) -> Any:
     """Python value of one COSMOS CONVERTED item for a primitive/enum/string F Prime type
 
-    Raises ValueError when the value does not fit the type.
+    Raises ValueError (or TypeError for a value of the wrong shape, e.g. a list where a number is expected) when the
+    value does not fit the type; callers treat both as "cannot rebuild".
     """
     if isinstance(value, dict) and value.get("json_class") == "Float":  # COSMOS's form for NaN / +-Infinity
         value = float(value.get("raw"))
