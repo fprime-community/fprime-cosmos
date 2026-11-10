@@ -662,6 +662,26 @@ class TestStreamDecoding:
         assert caplog.text.count("Cannot decode F Prime event record") <= 2
         assert decoder.send_to_all.call_count == 0
 
+    def test_event_packet_error_paths_never_reach_the_channel_path(self, dictionaries, caplog):
+        decoder = MagicMock()
+        decoder.data_callback.side_effect = RuntimeError("garbled")
+        client = CosmosTransport(cosmos_url="http://c", cosmos_target="FPRIME")
+        client.set_pipeline_references(dictionaries, MagicMock(), decoder)
+        client._index_channels()
+        channel = next(iter(dictionaries.channel_id))
+        packet = {
+            "__packet": "DECOM__TLM__FPRIME__FPRIME_EVENTS__CONVERTED",
+            "FPRIME_DESCRIPTOR": 2,
+            "FPRIME_CHANNEL_ID": channel,
+        }
+        with caplog.at_level(logging.WARNING, logger="cosmos_transport"):
+            for record in ([1, 2, 3], [1, 2, 3], 42, None, {"json_class": "String", "raw": 7}):
+                client._on_packet({**packet, "RECORD": record} if record is not None else packet)
+        assert decoder.data_callback.call_count == 2  # garbled records are handed over, the failure is survived
+        assert caplog.text.count("Cannot decode F Prime event record") == 1
+        assert caplog.text.count("no usable RECORD block") == 1
+        assert client.channel_decoder.send_to_all.call_count == 0  # the channel id item on an event packet is ignored
+
     def test_dictionary_packet_named_like_a_plugin_packet_is_refused(self, dictionaries):
         from unittest.mock import PropertyMock
 

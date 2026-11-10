@@ -220,9 +220,9 @@ channel and packet identifier types, `FwSizeStoreType` string lengths, boolean e
   dictionary. COSMOS stamps packets with the received time; rename `FPRIME_TIME` to `PACKET_TIME` in a copy of
   the plugin to stamp them with F Prime time instead (only meaningful for `TB_WORKSTATION_TIME`).
 - **Packetized telemetry** – one packet per entry of the selected `telemetryPacketSets` set.
-- `FPRIME_UNKNOWN` (last in `packets.txt`) catches packets the plugin does not model (events, files, data products).
+- `FPRIME_UNKNOWN` (last in `packets.txt`) catches packets the plugin does not model (files, data products).
 
-Events are not generated in this version.
+Events are carried by the `FPRIME_EVENTS` packet (opaque record, see the data transport above).
 
 ## Development
 

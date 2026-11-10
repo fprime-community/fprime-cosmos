@@ -71,8 +71,9 @@ class WireLayout:
         return self.packet_types["FW_PACKET_TELEM"]
 
     @property
-    def log_descriptor(self) -> int:
-        return self.packet_types["FW_PACKET_LOG"]
+    def log_descriptor(self) -> int | None:
+        """Descriptor of F Prime event packets; None when the project's packet-type enum has no FW_PACKET_LOG"""
+        return self.packet_types.get("FW_PACKET_LOG")
 
     @property
     def packetized_descriptor(self) -> int:

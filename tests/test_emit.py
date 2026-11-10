@@ -163,3 +163,14 @@ def test_packet_named_like_a_plugin_packet_is_refused(reference_dictionary):
         pytest.raises(DictionaryError, match="collides"),
     ):
         emit.emit_packets(reference_dictionary)
+
+
+def test_events_packet_is_skipped_without_a_log_descriptor(reference_dictionary):
+    from dataclasses import replace
+    from unittest.mock import patch
+
+    types_without_log = {k: v for k, v in reference_dictionary.layout.packet_types.items() if k != "FW_PACKET_LOG"}
+    layout = replace(reference_dictionary.layout, packet_types=types_without_log)
+    with patch.object(reference_dictionary, "layout", layout):
+        text = emit.emit_packets(reference_dictionary)
+    assert "FPRIME_EVENTS" not in text and text.rstrip().endswith('"Remaining packet bytes"')

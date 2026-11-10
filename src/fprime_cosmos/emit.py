@@ -264,7 +264,7 @@ def emit_events_packet(layout: WireLayout) -> list[str]:
 def emit_unknown_packet(layout: WireLayout) -> list[str]:
     """The CATCHALL packet; it must be defined after every identified packet, COSMOS tries packets in order"""
     descriptor = _descriptor_item(layout)
-    description = quote("F Prime packets not handled by this plugin (events, files, data products)")
+    description = quote("F Prime packets not handled by this plugin (files, data products)")
     lines = [f"TELEMETRY {TARGET} {UNKNOWN_PACKET} BIG_ENDIAN {description}", "  CATCHALL"]
     lines.extend(_item_lines(descriptor))
     lines.extend(f"    STATE {identifier(name)} {int(value)}" for name, value in layout.packet_types.items())
@@ -305,6 +305,7 @@ def emit_packets(dictionary: FprimeDictionary) -> str:
                 f"Telemetry packet {packet.get_name()!r} collides with the plugin's {full_name(packet).upper()} packet"
             )
         blocks.append("\n".join(emit_packet(packet, dictionary.layout)) + "\n")
-    blocks.append("\n".join(emit_events_packet(dictionary.layout)) + "\n")
+    if dictionary.layout.log_descriptor is not None:
+        blocks.append("\n".join(emit_events_packet(dictionary.layout)) + "\n")
     blocks.append("\n".join(emit_unknown_packet(dictionary.layout)) + "\n")
     return "\n".join(blocks)

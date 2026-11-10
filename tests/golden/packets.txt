@@ -794,7 +794,7 @@ TELEMETRY <%= target_name %> FPRIME_EVENTS BIG_ENDIAN "F Prime event record (opa
     META FPRIME_TYPE "FwPacketDescriptorType"
   APPEND_ITEM RECORD 0 BLOCK "Event id, time and arguments as serialized by F Prime"
 
-TELEMETRY <%= target_name %> FPRIME_UNKNOWN BIG_ENDIAN "F Prime packets not handled by this plugin (events, files, data products)"
+TELEMETRY <%= target_name %> FPRIME_UNKNOWN BIG_ENDIAN "F Prime packets not handled by this plugin (files, data products)"
   CATCHALL
   APPEND_ITEM FPRIME_DESCRIPTOR 16 UINT "F Prime packet descriptor"
     META FPRIME_TYPE "FwPacketDescriptorType"

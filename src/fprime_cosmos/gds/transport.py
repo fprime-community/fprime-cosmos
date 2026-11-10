@@ -7,8 +7,9 @@ the cmd-tlm-api streaming websocket (ActionCable ``StreamingChannel``, DECOM CON
 channel data: a packet carrying the generator's ``FPRIME_CHANNEL_ID`` item is resolved by channel id, a packet named
 after a dictionary channel by its name, any other packet by the channel names its items spell (``CosmosNaming``), and
 the value is reassembled from the items exactly as
-``fprime_cosmos.items.flatten`` split it (primitives, enums, strings, arrays and structs). Events, files and data
-products are not delivered: the generator does not model them yet and this transport maps telemetry channels only.
+``fprime_cosmos.items.flatten`` split it (primitives, enums, strings, arrays and structs). Events arrive as the opaque
+``FPRIME_EVENTS`` record and go through the pipeline's event decoder; files and data products are not delivered (the
+generator does not model them).
 
 The COSMOS password is read from ``OPENC3_API_PASSWORD`` only; it never appears on a command line, in a URI, in a log
 line or in an exception message.
@@ -605,7 +606,7 @@ class CosmosTransport(TransportClient):
     def set_pipeline_references(self, dictionaries, channel_decoder, event_decoder):
         """Called by the pipeline (fprime-gds data_transport contract) so decoded ChData can be delivered
 
-        ``event_decoder`` is kept for the day the generator models events; nothing is delivered to it yet.
+        ``event_decoder`` receives the opaque ``FPRIME_EVENTS`` records (``Decoder.data_callback``).
         """
         self.dictionaries = dictionaries
         self.channel_decoder = channel_decoder
@@ -784,15 +785,13 @@ class CosmosTransport(TransportClient):
                 LOGGER.warning("COSMOS %s packet carries no usable %s block", EVENTS_PACKET, EVENT_RECORD_ITEM)
             return
         try:
-            decoded = self.event_decoder.decode_api(bytes(record))
+            self.event_decoder.data_callback(bytes(record))  # decode_api, then every registered consumer
         except Exception as exc:
             key = f"event:{type(exc).__name__}:{exc}"[:120]
             if key not in self._failed_channels:
                 self._failed_channels.add(key)
                 LOGGER.warning("Cannot decode F Prime event record from COSMOS (repeats are silent): %s", exc)
             return
-        for event in decoded if isinstance(decoded, list) else ([decoded] if decoded is not None else []):
-            self.event_decoder.send_to_all(event)
 
     def _channels_in(self, packet_name: str | None, items: dict[str, Any]) -> list[tuple[Any, str]]:
         """(channel template, item-name root) pairs carried by one streamed packet"""
