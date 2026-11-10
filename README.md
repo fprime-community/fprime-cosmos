@@ -131,6 +131,33 @@ One plugin serves one COSMOS target: installing a dictionary for a target that a
 serves upgrades that plugin in place (COSMOS forbids two plugins defining the same target). Use
 `--target-name` to run several deployments side by side.
 
+### COSMOS as the GDS data transport (integration tests through COSMOS)
+
+`fprime-cosmos` also ships a [fprime-gds `data-transport` plugin](https://github.com/nasa/fprime-gds/pull/386) named
+`cosmos`, so the GDS Integration Test API (and any other `fprime-gds` pipeline user) can talk to the deployment
+*through COSMOS* instead of the GDS comm layer: commands go to the COSMOS cmd-tlm-api (JSON-RPC
+`cmd_no_hazardous_check`), telemetry comes back from the COSMOS streaming websocket (`/openc3-api/cable`, DECOM
+CONVERTED values) and is rebuilt into GDS channel data with the F Prime time carried by the `FPRIME_TIME_*` items.
+
+```bash
+export OPENC3_API_PASSWORD=...        # password only from the environment; never on the command line
+pytest test/int --dictionary <dictionary>.json \
+    --data-transport-selection cosmos --cosmos-url http://localhost:2900 --cosmos-target FPRIME
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `--data-transport-selection cosmos` | select the COSMOS transport (default is the GDS ZeroMQ transport) |
+| `--cosmos-url` | cmd-tlm-api URL, `http://localhost:2900` by default; `https://` is honored |
+| `--cosmos-scope` | COSMOS scope, `DEFAULT` |
+| `--cosmos-target` | COSMOS target of the deployment, `FPRIME` (the name this generator emits) |
+| `--cosmos-layout` | `fprime` (this generator: per-channel packets named after the channel) or `cfs` (one-app-one-target cFS generator: upper-cased dotted item names, e.g. `CFSCORE.CMDDISP.COMMANDSDISPATCHED` in `HEALTH`) |
+
+Requires `fprime-gds` with the `data-transport` plugin category (>= 4.5); on older releases the entry point is
+ignored. Events, files and data products are not yet modeled in COSMOS, so event assertions do not pass through this
+transport until the generator emits an events packet. The password is never placed in URLs, logs or the GDS
+connection URI.
+
 ### Generating the plugin on its own
 
 ```bash

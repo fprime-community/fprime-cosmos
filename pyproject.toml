@@ -18,6 +18,7 @@ classifiers = [
 dependencies = [
     "fprime-gds>=4.4.0a4",
     "requests>=2.25",
+    "websocket-client>=1.2",
 ]
 
 [project.optional-dependencies]
@@ -26,6 +27,9 @@ dev = ["pytest", "ruff", "build"]
 [project.scripts]
 fprime-to-cosmos = "fprime_cosmos.generate.__main__:main"
 fprime-cosmos = "fprime_cosmos.__main__:main"
+
+[project.entry-points.fprime_gds]
+cosmos = "fprime_cosmos.gds.transport:CosmosClient"
 
 [project.urls]
 Homepage = "https://github.com/fprime-community/fprime-cosmos"
