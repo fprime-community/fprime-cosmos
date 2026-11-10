@@ -632,13 +632,17 @@ class TestStreamDecoding:
         with pytest.raises(ValueError, match="not a GdsTransportTestColor label"):
             coerce_scalar("BLUE", enum)
 
-    def test_time_base_label_is_matched_case_insensitively(self, client):
+    def test_time_base_label_is_matched_case_insensitively(self, client, caplog):
         items = {
-            "FPRIME_TIME_BASE": "tb_workstation_time",
+            "FPRIME_TIME_BASE": "tb_sc_time",
             "FPRIME_TIME_CONTEXT": 0,
             "FPRIME_TIME_SECONDS": 9,
             "FPRIME_TIME_USECONDS": 1,
         }
+        with caplog.at_level(logging.WARNING, logger="cosmos_transport"):
+            time_obj = client._packet_time(items)
+        assert (time_obj.seconds, time_obj.timeBase.val) == (9, "TB_SC_TIME") and caplog.text == ""
+        items["FPRIME_TIME_BASE"] = "TB_WORKSTATION_TIME"
         assert (client._packet_time(items).seconds, client._packet_time(items).timeBase.val) == (
             9,
             "TB_WORKSTATION_TIME",

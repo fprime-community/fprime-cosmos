@@ -476,10 +476,10 @@ class StreamingSocket:
                     self.token = None
                     auth_failures += 1
                     if auth_failures >= MAX_AUTH_FAILURES:
-                        self.failure = exc
                         LOGGER.error(
                             "COSMOS rejected the streaming subscription %d times; giving up on telemetry", auth_failures
                         )
+                        self.failure = exc  # published last: observers of `failure` also see the log line
                         return
                 LOGGER.warning("COSMOS stream error (%s: %s); reconnecting in %.0fs", type(exc).__name__, exc, delay)
                 self._stop.wait(delay)
@@ -838,7 +838,7 @@ class CosmosTransport(TransportClient):
                 LOGGER.debug("No usable F Prime time in packet (%s); using the receive time", exc)
             else:
                 try:
-                    time_base = coerce_scalar(base, TimeType.TimeBase) if isinstance(base, str) else int(base)
+                    time_base = time_base_from_label(base) if isinstance(base, str) else int(base)
                     return TimeType(time_base=time_base, time_context=context, seconds=seconds, useconds=useconds)
                 except Exception as exc:
                     key = f"time base {base!r}"
@@ -939,6 +939,14 @@ def command_parameters(name: str, type_class: type, value: Any) -> dict[str, Any
     if issubclass(type_class, BoolType):
         return {name.upper(): BOOL_STATES[1] if value else BOOL_STATES[0]}
     return {name.upper(): value}
+
+
+def time_base_from_label(label: str):
+    """fprime-gds ``TimeBase`` enum for a label as COSMOS reports it (upper-cased); ValueError when unknown"""
+    from fprime_gds.common.utils.config_manager import ConfigManager
+
+    time_base_type = ConfigManager().get_type("TimeBase")
+    return time_base_type(coerce_scalar(label, time_base_type))
 
 
 def coerce_scalar(value: Any, type_class: type) -> Any:
