@@ -59,9 +59,8 @@ from fprime_cosmos.emit import (
 from fprime_cosmos.items import BOOL_STATES
 
 LOGGER = logging.getLogger("cosmos_transport")
-MAX_WARNED_EVENT_FAILURES = (
-    16  # distinct event-decoding failure causes warned about as they happen; more are only counted
-)
+# distinct event-record failure causes warned about as they happen; further causes are only counted
+MAX_WARNED_EVENT_FAILURES = 16
 
 COSMOS_URI_SCHEME = "cosmos://"
 COSMOS_SECURE_URI_SCHEME = "cosmos+https://"
@@ -118,6 +117,13 @@ class CosmosUnreachableError(CosmosTransportError):
 
 class SubscriptionRejectedError(CosmosTransportError):
     """COSMOS refused the StreamingChannel subscription (token expired, wrong scope, ...)"""
+
+
+def _event_id_bytes() -> int:
+    """Width of the dictionary-configured FwEventIdType: the least an event record can hold"""
+    from fprime_gds.common.utils.config_manager import ConfigManager
+
+    return ConfigManager().get_type("FwEventIdType")().getSize()
 
 
 def redact_url(url: str) -> str:
@@ -331,13 +337,16 @@ class StreamingSocket:
         self._thread = threading.Thread(target=self._run, name="cosmos-stream", daemon=True)
         self._thread.start()
 
-    def stop(self):
+    def stop(self) -> bool:
+        """Stop the stream; True when its thread is no longer running"""
         self._stop.set()
         self._close_socket()
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout=STREAM_JOIN_TIMEOUT_SECONDS)
             if self._thread.is_alive():
                 LOGGER.warning("COSMOS stream thread did not stop within %ss", STREAM_JOIN_TIMEOUT_SECONDS)
+                return False
+        return True
 
     def _close_socket(self):
         socket, self._socket = self._socket, None
@@ -520,6 +529,7 @@ class CosmosTransport(TransportClient):
         self._channel_index: dict[str, Any] = {}
         self._packet_channels: dict[str, Any] = {}
         self._failed_channels: set[str] = set()
+        self._event_id_bytes = 4
         self._warned_event_failures: set[str] = set()
         self._suppressed_event_failures: dict[str, int] = {}
         self._pending_commands = 0
@@ -610,13 +620,14 @@ class CosmosTransport(TransportClient):
         return url
 
     def set_pipeline_references(self, dictionaries, channel_decoder, event_decoder):
-        """Called by the pipeline (fprime-gds data_transport contract) so decoded ChData can be delivered
+        """Called by the pipeline (fprime-gds data_transport contract) so ChData and event records can be delivered
 
         ``event_decoder`` receives the opaque ``FPRIME_EVENTS`` records (``Decoder.data_callback``).
         """
         self.dictionaries = dictionaries
         self.channel_decoder = channel_decoder
         self.event_decoder = event_decoder
+        self._event_id_bytes = _event_id_bytes()
 
     def connect(self, connection_uri=None, incoming_routing=None, outgoing_routing=None):
         url = self._parse_uri(self.default_uri if connection_uri is None else connection_uri)
@@ -668,16 +679,20 @@ class CosmosTransport(TransportClient):
             raise CosmosTransportError("the installed 'websocket' module is not websocket-client")
 
     def disconnect(self):
+        stopped = True
         if self.stream is not None:
-            self.stream.stop()
+            stopped = self.stream.stop()
             self.stream = None
         if self.api is not None:
             self.api.session.close()
             self.api = None
-        # the stream thread is joined: nothing writes the counters any more
+        # the stream thread is joined (or gave up after STREAM_JOIN_TIMEOUT_SECONDS, in which case the counts may
+        # miss stragglers): swap the counters out before reporting them so a late write cannot break the iteration
         suppressed, self._suppressed_event_failures = self._suppressed_event_failures, {}
         for key, count in suppressed.items():
-            LOGGER.warning("%d F Prime event record(s) from COSMOS dropped: %s", count, key)
+            LOGGER.warning(
+                "%d F Prime event record(s) from COSMOS dropped%s: %s", count, "" if stopped else " (at least)", key
+            )
 
     def send(self, data):
         """Encoded GDS packets: the echo of a command just issued through the cmd API is expected, anything else
@@ -799,15 +814,21 @@ class CosmosTransport(TransportClient):
             record = record.encode("utf-8", errors="surrogatepass")  # a lone surrogate is just an undecodable record
         if self.event_decoder is None:
             key, cause = "events:no-decoder", "no event decoder is attached"
-        elif not isinstance(record, (list, bytes, bytearray)) or len(record) < self.event_decoder.id_obj.getSize():
+        elif not isinstance(record, (list, bytes, bytearray)) or len(record) < self._event_id_bytes:
             # shorter than the dictionary's FwEventIdType: the decoder could not even name the event
             key, cause = "events:no-block", f"no usable {EVENT_RECORD_ITEM} block"
         else:
             key = None
         if key is not None:
-            if key not in self._failed_channels:
+            if key in self._failed_channels:
+                self._suppressed_event_failures[cause] = self._suppressed_event_failures.get(cause, 0) + 1
+            else:
                 self._failed_channels.add(key)
-                LOGGER.warning("COSMOS %s packet dropped: %s", EVENTS_PACKET, cause)
+                LOGGER.warning(
+                    "COSMOS %s packet dropped (repeats are counted and reported at disconnect): %s",
+                    EVENTS_PACKET,
+                    cause,
+                )
             return
         try:
             self.event_decoder.data_callback(bytes(record))  # decode_api, then every registered consumer

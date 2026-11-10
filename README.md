@@ -189,8 +189,9 @@ installed from an earlier `fprime-cosmos` (regenerate and reinstall it: run the 
 a dictionary without `FW_PACKET_LOG`, or `--cosmos-layout cfs` (the cFS generator has no events packet yet):
 `connect()` still succeeds, the transport logs a warning and event assertions time out. An event record the
 fprime-gds event decoder cannot decode (for example an event id the loaded dictionary does not define) is dropped:
-each failure cause is warned about once as it happens (at most 16 causes), and the number of further dropped records
-per cause is logged at `disconnect()`. Files and data products are not modeled (a file uplink attempted through the
+each failure cause is warned about once as it happens (at most 16 causes; further causes are counted together), and
+the number of further dropped records per cause is logged at `disconnect()`; a record with no usable `RECORD` block
+is dropped and reported the same way. Files and data products are not modeled (a file uplink attempted through the
 transport fails at once with an error instead of waiting for a handshake). A COSMOS command
 rejection is raised to the caller (the test fails); a target without telemetry packets, a refused password or a
 rejected first subscription fails `connect()` at once; afterwards, after three
@@ -226,9 +227,10 @@ channel and packet identifier types, `FwSizeStoreType` string lengths, boolean e
   dictionary. COSMOS stamps packets with the received time; rename `FPRIME_TIME` to `PACKET_TIME` in a copy of
   the plugin to stamp them with F Prime time instead (only meaningful for `TB_WORKSTATION_TIME`).
 - **Packetized telemetry** – one packet per entry of the selected `telemetryPacketSets` set.
-- `FPRIME_EVENTS` – the F Prime event record after its descriptor as one opaque `RECORD` block (decoded by the
-  `cosmos` data transport through fprime-gds; omitted only when the dictionary's packet-type enumeration
-  (`Fw.ComPacketType`, else `ComCfg.Apid`, else the built-in fallback) has no `FW_PACKET_LOG`).
+- `FPRIME_EVENTS` – the F Prime event record after its descriptor as one opaque `RECORD` block. COSMOS tools show it
+  as raw bytes (no event name, time or text); readable events are only available through the `cosmos` data transport
+  below (fprime-gds decodes the record). Omitted only when the dictionary's packet-type enumeration
+  (`Fw.ComPacketType`, else `ComCfg.Apid`, else the built-in fallback) has no `FW_PACKET_LOG`.
 - `FPRIME_UNKNOWN` (last in `packets.txt`) catches packets the plugin does not model (files, data products).
 
 `FPRIME_CHANNELS`, `FPRIME_EVENTS` and `FPRIME_UNKNOWN` are reserved: a dictionary telemetry packet of one of these

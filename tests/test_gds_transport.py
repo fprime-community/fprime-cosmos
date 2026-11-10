@@ -90,13 +90,6 @@ def channel_packet(name: str, items: dict, time_items: dict | None = FPRIME_TIME
     return packet
 
 
-def fake_event_decoder() -> MagicMock:
-    """An EventDecoder stand-in whose id width is the reference dictionary's U32"""
-    decoder = MagicMock()
-    decoder.id_obj.getSize.return_value = 4
-    return decoder
-
-
 class FakeResponse:
     def __init__(self, status=200, payload=None, text=None):
         self.status_code = status
@@ -701,14 +694,23 @@ class TestStreamDecoding:
         assert caplog.text.count("Cannot decode or deliver F Prime event record") == 4
         assert len(client._warned_event_failures) == 4
         client.stream = MagicMock()
-        client.stream.stop.side_effect = lambda: client._on_packet(  # the last record of the stream, before the join
-            {**packet, "RECORD": [0xFF, 0xFF, 0xFF, 0xFF, 1, 2, 3]}
-        )
+
+        def last_record_then_stopped():  # the last record of the stream arrives before the join completes
+            client._on_packet({**packet, "RECORD": [0xFF, 0xFF, 0xFF, 0xFF, 1, 2, 3]})
+            return True
+
+        client.stream.stop.side_effect = last_record_then_stopped
         with caplog.at_level(logging.WARNING, logger="cosmos_transport"):
             client.disconnect()  # the suppressed repeats are accounted for once the stream thread is stopped
         assert client.stream is None
         assert "4 F Prime event record(s) from COSMOS dropped: DecodingException: Event N not found" in caplog.text
         assert "5 F Prime event record(s) from COSMOS dropped: DecodingException:" in caplog.text  # incl. the last one
+        client._on_packet({**packet, "RECORD": [0xFF, 0xFF, 0xFF, 0xFF, 1, 2, 3]})
+        client.stream = MagicMock()
+        client.stream.stop.return_value = False  # the thread outlived the join: the count is a lower bound
+        with caplog.at_level(logging.WARNING, logger="cosmos_transport"):
+            client.disconnect()
+        assert "1 F Prime event record(s) from COSMOS dropped (at least): DecodingException:" in caplog.text
         assert client._suppressed_event_failures == {}
         decoder.data_callback = MagicMock(wraps=decoder.data_callback)
         with caplog.at_level(logging.WARNING, logger="cosmos_transport"):
@@ -720,8 +722,18 @@ class TestStreamDecoding:
         client._on_packet({**packet, "RECORD": list(template.get_id().to_bytes(4, "big")) + [0] * 11})
         assert decoder.send_to_all.call_count == 1  # a well-formed record still gets through after the failures
 
+    def test_short_record_guard_follows_the_configured_event_id_size(self, dictionaries):
+        decoder = MagicMock()
+        client = CosmosTransport(cosmos_url="http://c", cosmos_target="FPRIME")
+        with patch.object(transport, "_event_id_bytes", return_value=2):  # a project with a U16 FwEventIdType
+            client.set_pipeline_references(dictionaries, MagicMock(), decoder)
+        packet = {"__packet": "DECOM__TLM__FPRIME__FPRIME_EVENTS__CONVERTED", "FPRIME_DESCRIPTOR": 2}
+        client._on_packet({**packet, "RECORD": [0, 1]})  # exactly one id: handed over
+        client._on_packet({**packet, "RECORD": [1]})  # shorter than an id: dropped
+        assert [call.args[0] for call in decoder.data_callback.call_args_list] == [b"\x00\x01"]
+
     def test_plain_text_record_block_is_decoded_as_utf8(self, dictionaries):
-        decoder = fake_event_decoder()
+        decoder = MagicMock()
         client = CosmosTransport(cosmos_url="http://c", cosmos_target="FPRIME")
         client.set_pipeline_references(dictionaries, MagicMock(), decoder)
         client._index_channels()
@@ -750,7 +762,7 @@ class TestStreamDecoding:
         assert "no usable RECORD block" not in caplog.text
 
     def test_event_packet_error_paths_never_reach_the_channel_path(self, dictionaries, caplog):
-        decoder = fake_event_decoder()
+        decoder = MagicMock()
         decoder.data_callback.side_effect = RuntimeError("garbled")
         client = CosmosTransport(cosmos_url="http://c", cosmos_target="FPRIME")
         client.set_pipeline_references(dictionaries, MagicMock(), decoder)
@@ -775,20 +787,35 @@ class TestStreamDecoding:
         assert caplog.text.count("Cannot decode or deliver F Prime event record") == 2  # one line per failure cause
         assert "ValueError: another kind" in caplog.text
         with caplog.at_level(logging.WARNING, logger="cosmos_transport"):
+            decoder.data_callback.side_effect = ValueError("x" * 500)  # a third cause, whose key is length-bounded
+            client._on_packet({**packet, "RECORD": [0, 0, 0, 1] + [0] * 11})
             for letter in "abcdefghijklmnopqrstuvwxyz":  # distinct causes are reported up to the cap, then counted
                 decoder.data_callback.side_effect = ValueError(f"cause {letter}")
                 client._on_packet({**packet, "RECORD": [0, 0, 0, 1] + [0] * 11})
+            decoder.data_callback.side_effect = ValueError("another kind")  # warned before the cap: keeps its own key
+            client._on_packet({**packet, "RECORD": [0, 0, 0, 1] + [0] * 11})
+            before = decoder.data_callback.call_count
+            client._on_packet({**packet, "RECORD": {"json_class": "String", "raw": [256, 0, 0, 1] + [0] * 11}})
+            client._on_packet({**packet, "RECORD": ["a", "b", "c", "d"]})  # a list, long enough, but not bytes
             client.disconnect()
+        assert decoder.data_callback.call_count == before  # non-byte lists fail in the transport, survived and counted
+        assert all(len(key) <= 96 for key in client._warned_event_failures)
+        assert "1 F Prime event record(s) from COSMOS dropped: ValueError: another kind" in caplog.text
         assert caplog.text.count("Cannot decode or deliver F Prime event record") == transport.MAX_WARNED_EVENT_FAILURES
-        beyond_cap = 26 - (transport.MAX_WARNED_EVENT_FAILURES - 2)
+        beyond_cap = 26 - (transport.MAX_WARNED_EVENT_FAILURES - 3) + 2  # letters past the cap + two non-byte lists
         assert f"{beyond_cap} F Prime event record(s) from COSMOS dropped: other causes" in caplog.text
         with caplog.at_level(logging.WARNING, logger="cosmos_transport"):
             client._on_packet({**packet, "RECORD": [1]})  # unusable block: warned once...
+            client._on_packet({**packet, "RECORD": [1]})
             client.event_decoder = None
             client._on_packet({**packet, "RECORD": [0, 0, 0, 1] + [0] * 11})  # ...and the no-decoder drop separately
-        assert caplog.text.count("no usable RECORD block") == 1
+            client.disconnect()
+        # the one warning, the earlier disconnect's count (42 / None) and this disconnect's count (two [1] records)
+        assert caplog.text.count("no usable RECORD block") == 3
+        assert caplog.text.count("2 F Prime event record(s) from COSMOS dropped: no usable RECORD block") == 2
         assert caplog.text.count("no event decoder is attached") == 1
-        assert caplog.text.count("F Prime event record(s) from COSMOS dropped") == 2  # + the repeated "garbled" record
+        # garbled repeat, unusable blocks (42, None), other causes, "another kind", then the second disconnect's blocks
+        assert caplog.text.count("F Prime event record(s) from COSMOS dropped") == 5
 
     def test_dictionary_packet_named_like_a_plugin_packet_is_refused(self, dictionaries):
         from unittest.mock import PropertyMock

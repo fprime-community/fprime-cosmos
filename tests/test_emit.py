@@ -175,5 +175,7 @@ def test_events_packet_is_skipped_without_a_log_descriptor(reference_dictionary)
     with patch.object(reference_dictionary, "layout", layout):
         text = emit.emit_packets(reference_dictionary)
     assert "FPRIME_EVENTS" not in text and text.rstrip().endswith('"Remaining packet bytes"')
+    assert "not handled by this plugin (events, files, data products)" in text  # the catch-all says so
+    assert "(events, files" not in emit.emit_packets(reference_dictionary)  # ...only when events are not modeled
     with pytest.raises(DictionaryError, match="FW_PACKET_LOG"):
         emit.emit_events_packet(layout)

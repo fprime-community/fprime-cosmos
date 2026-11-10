@@ -154,7 +154,7 @@ def _item_lines(item: CosmosItem, id_value: int | None = None, extra: Iterable[s
         array = f"{name} {item.bit_size} {item.data_type} {item.array_bit_size}"
         lines = [f"  APPEND_ARRAY_ITEM {array} {quote(item.description)}"]
     elif id_value is not None:
-        lines = [f"  {keyword} {name} {item.bit_size} {item.data_type} {id_value} {quote(item.description)}"]
+        lines = [f"  {keyword} {name} {item.bit_size} {item.data_type} {int(id_value)} {quote(item.description)}"]
     else:
         lines = [f"  {keyword} {name} {item.bit_size} {item.data_type} {quote(item.description)}"]
     lines.extend(_modifier_lines(item, extra))
@@ -246,7 +246,7 @@ def emit_channelized_parent(layout: WireLayout) -> list[str]:
 
 
 def emit_events_packet(layout: WireLayout) -> list[str]:
-    """Opaque F Prime event record: the GDS event decoder (through the ``cosmos`` data transport) decodes it exactly
+    """Opaque F Prime event record, decoded unchanged by the fprime-gds event decoder through the ``cosmos`` transport
 
     Identified by the log descriptor; everything after it (event id, time, arguments) stays one BLOCK so no text
     reconstruction is needed. Must be emitted before the catch-all.
@@ -266,7 +266,8 @@ def emit_events_packet(layout: WireLayout) -> list[str]:
 def emit_unknown_packet(layout: WireLayout) -> list[str]:
     """The CATCHALL packet; it must be defined after every identified packet, COSMOS tries packets in order"""
     descriptor = _descriptor_item(layout)
-    description = quote("F Prime packets not handled by this plugin (files, data products)")
+    unhandled = "files, data products" if layout.log_descriptor is not None else "events, files, data products"
+    description = quote(f"F Prime packets not handled by this plugin ({unhandled})")
     lines = [f"TELEMETRY {TARGET} {UNKNOWN_PACKET} BIG_ENDIAN {description}", "  CATCHALL"]
     lines.extend(_item_lines(descriptor))
     lines.extend(f"    STATE {identifier(name)} {int(value)}" for name, value in layout.packet_types.items())
