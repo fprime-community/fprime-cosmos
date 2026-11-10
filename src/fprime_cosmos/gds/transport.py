@@ -7,7 +7,7 @@ the cmd-tlm-api streaming websocket (ActionCable ``StreamingChannel``, DECOM CON
 channel data: a packet carrying the generator's ``FPRIME_CHANNEL_ID`` item is resolved by channel id, any other packet
 by the channel names its items spell (``CosmosNaming``), and the value is reassembled from the items exactly as
 ``fprime_cosmos.items.flatten`` split it (primitives, enums, strings, arrays and structs). Events, files and data
-products are not delivered: the generator does not model them yet and this client maps telemetry channels only.
+products are not delivered: the generator does not model them yet and this transport maps telemetry channels only.
 
 The COSMOS password is read from ``OPENC3_API_PASSWORD`` only; it never appears on a command line, in a URI, in a log
 line or in an exception message.
@@ -16,7 +16,6 @@ line or in an exception message.
 from __future__ import annotations
 
 import contextlib
-import datetime
 import json
 import logging
 import os
@@ -32,13 +31,14 @@ from fprime_gds.common.data_types.cmd_data import CmdData
 from fprime_gds.common.models.serialize.array_type import ArrayType
 from fprime_gds.common.models.serialize.bool_type import BoolType
 from fprime_gds.common.models.serialize.enum_type import EnumType
-from fprime_gds.common.models.serialize.numerical_types import FloatType, IntegerType
+from fprime_gds.common.models.serialize.numerical_types import FloatType, IntegerType, NumericalType
 from fprime_gds.common.models.serialize.serializable_type import SerializableType
 from fprime_gds.common.models.serialize.string_type import StringType
 from fprime_gds.common.models.serialize.time_type import TimeType
 from fprime_gds.common.transport import TransportationException, TransportClient
 from fprime_gds.plugin.definitions import gds_plugin_implementation
 
+from fprime_cosmos.dictionary import DictionaryError
 from fprime_cosmos.emit import (
     CHANNEL_ID_ITEM,
     CHANNELIZED_PACKET,
@@ -50,6 +50,7 @@ from fprime_cosmos.emit import (
     UNKNOWN_PACKET,
     identifier,
 )
+from fprime_cosmos.items import BOOL_STATES
 
 LOGGER = logging.getLogger("cosmos_transport")
 
@@ -60,7 +61,7 @@ DEFAULT_SCOPE = "DEFAULT"
 DEFAULT_TARGET = "FPRIME"
 PASSWORD_ENV = "OPENC3_API_PASSWORD"
 LAYOUTS = ("fprime", "cfs")
-LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1", "[::1]")
+LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 API_PATH = "/openc3-api/api"
 AUTH_PATH = "/openc3-api/auth"
@@ -79,15 +80,21 @@ NON_VALUE_ITEMS = (
 )
 STRING_LENGTH_SUFFIX = "_LENGTH"
 RECONNECT_DELAY_SECONDS = 2.0
+RECONNECT_DELAY_MAX_SECONDS = 60.0
+MAX_AUTH_FAILURES = 3
+STREAM_JOIN_TIMEOUT_SECONDS = 5.0
+#: ActionCable pings every 3 s; a socket silent for longer than this is treated as half-open and reconnected
+STREAM_IDLE_TIMEOUT_SECONDS = 15.0
 SOCKET_READ_TIMEOUT_SECONDS = 1.0
+CONNECT_TIMEOUT_SECONDS = 10.0
 SUBSCRIBE_TIMEOUT_SECONDS = 10.0
 TIME_BASE_WORKSTATION = "TB_WORKSTATION_TIME"
 BOOL_TRUE_WORDS = ("TRUE", "1", "ON")
 BOOL_FALSE_WORDS = ("FALSE", "0", "OFF")
 
 if not hasattr(TransportClient, "register_data_transport_plugin"):
-    LOGGER.warning(
-        "The installed fprime-gds has no data-transport plugin category (nasa/fprime-gds#386); "
+    LOGGER.debug(
+        "The installed fprime-gds has no data_transport plugin category (nasa/fprime-gds#386); "
         "--data-transport-selection cosmos is unavailable"
     )
 
@@ -118,8 +125,9 @@ class CosmosNaming:
     and the cFS ``cfs`` layout (one-app-one-target generator) spell the full dotted name instead
     (``CfsCore.cmdDisp.CommandsDispatched`` -> ``CFSCORE.CMDDISP.COMMANDSDISPATCHED``, inside ``HEALTH`` or a
     per-channel packet). Commands are named after the dictionary full name with parameters named after the arguments
-    in both layouts. COSMOS upper-cases packet, item and parameter names, so every name here is compared upper-cased.
-    The ``cfs`` command form is taken from the one-app-one-target generator's documentation and is not exercised
+    in both layouts. COSMOS upper-cases packet, item and parameter names, so those are compared upper-cased here; the
+    command name is sent as spelled in the dictionary and upper-cased by COSMOS itself. The ``cfs`` command form is
+    taken from the one-app-one-target generator's documentation and is not exercised
     live by this package's tests.
     """
 
@@ -165,17 +173,32 @@ class CosmosApi:
         self.session = requests.Session()
         self.token: str | None = None
         self._id = 0
+        self._lock = threading.RLock()
 
     def authenticate(self) -> str:
+        """Exchange the password for a session token (thread-safe; the stream thread refreshes it too)"""
         if not self.password:
             raise CosmosTransportError(f"A COSMOS password is required: set {PASSWORD_ENV}")
+        with self._lock:
+            return self._authenticate()
+
+    def _authenticate(self) -> str:
         try:
-            exists = self._check(self.session.get(f"{self.url}{AUTH_PATH}/token-exists", timeout=self.timeout))
-            if not exists.json().get("result"):
+            exists = self._check(
+                self.session.get(f"{self.url}{AUTH_PATH}/token-exists", timeout=self.timeout, allow_redirects=False)
+            )
+            try:
+                has_password = exists.json().get("result")
+            except (ValueError, AttributeError) as error:
+                raise CosmosTransportError(f"{redact_url(self.url)} did not answer as a COSMOS cmd-tlm-api") from error
+            if not has_password:
                 raise CosmosTransportError(f"COSMOS at {redact_url(self.url)} has no password set yet")
             response = self._check(
                 self.session.post(
-                    f"{self.url}{AUTH_PATH}/verify", data={"password": self.password}, timeout=self.timeout
+                    f"{self.url}{AUTH_PATH}/verify",
+                    data={"password": self.password},
+                    timeout=self.timeout,
+                    allow_redirects=False,
                 )
             )
         except requests.RequestException as error:
@@ -187,13 +210,24 @@ class CosmosApi:
         return self.token
 
     def call(self, method: str, *params: Any, **keyword_params: Any) -> Any:
-        """One JSON-RPC call against /openc3-api/api; returns the result or raises CosmosTransportError"""
+        """One JSON-RPC call against /openc3-api/api; returns the result or raises CosmosTransportError
+
+        A 401/403 (session token invalidated, e.g. COSMOS restarted) re-authenticates once and retries.
+        """
+        with self._lock:
+            response = self._post(method, params, keyword_params)
+            if response.status_code in (401, 403) and self.password:
+                LOGGER.info("COSMOS session token rejected (%s); re-authenticating", response.status_code)
+                self._authenticate()
+                response = self._post(method, params, keyword_params)
+        return self._result(method, response)
+
+    def _post(self, method: str, params: tuple, keyword_params: dict) -> requests.Response:
         self._id += 1
         body = {"jsonrpc": "2.0", "method": method, "params": list(params), "id": self._id}
-        keyword_params.setdefault("scope", self.scope)
-        body["keyword_params"] = keyword_params
+        body["keyword_params"] = {"scope": self.scope, **keyword_params}
         try:
-            response = self.session.post(
+            return self.session.post(
                 f"{self.url}{API_PATH}",
                 data=json.dumps(body),
                 headers={"Content-Type": "application/json-rpc"},
@@ -201,20 +235,27 @@ class CosmosApi:
             )
         except requests.RequestException as error:
             raise CosmosTransportError(f"Cannot reach COSMOS at {redact_url(self.url)}: {error}") from error
+
+    @staticmethod
+    def _result(method: str, response: requests.Response) -> Any:
         try:
             payload = response.json()
         except ValueError:
             payload = {}
+        if not isinstance(payload, dict):
+            payload = {"error": {"message": f"unexpected JSON-RPC reply {type(payload).__name__}"}}
         if response.status_code >= 400 or "error" in payload:
-            error = payload.get("error") or {}
-            message = error.get("data", {}).get("message") if isinstance(error, dict) else None
+            error = payload.get("error")
+            data = error.get("data") if isinstance(error, dict) else None
+            message = data.get("message") if isinstance(data, dict) else (data if isinstance(data, str) else None)
             message = message or (error.get("message") if isinstance(error, dict) else None) or response.text
             raise CosmosTransportError(f"COSMOS {method} failed ({response.status_code}): {message}")
         return payload.get("result")
 
     @staticmethod
     def _check(response: requests.Response) -> requests.Response:
-        if response.status_code >= 400:
+        """Accept 2xx only: a redirect would replay the password elsewhere, so it is a failure too"""
+        if response.status_code >= 300:
             raise CosmosTransportError(
                 f"{response.request.method} {redact_url(response.url)} failed ({response.status_code})"
             )
@@ -228,8 +269,11 @@ class CosmosApi:
 class StreamingSocket:
     """ActionCable client for the cmd-tlm-api StreamingChannel (DECOM packets) on a background thread
 
-    ``token_provider`` is called for a fresh token whenever COSMOS rejects the subscription (expired token); a packet
-    callback that raises is logged and skipped without dropping the subscription.
+    Reconnects with exponential backoff (``RECONNECT_DELAY_SECONDS`` .. ``RECONNECT_DELAY_MAX_SECONDS``);
+    ``token_provider`` is called for a fresh token whenever COSMOS rejects the subscription (expired token), and after
+    ``MAX_AUTH_FAILURES`` consecutive rejections the thread gives up (``failure`` is set, an ERROR is logged) rather
+    than re-sending the password forever. A packet callback that raises is logged once per packet name and skipped
+    without dropping the subscription.
     """
 
     def __init__(
@@ -248,25 +292,36 @@ class StreamingSocket:
         self.callback = callback
         self.token: str | None = None
         self.identifier = ""
-        if token:
-            self._set_token(token)
+        self.failure: Exception | None = None
+        self._dropped: set[str] = set()
         self._socket = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        if token:
+            self._set_token(token)
 
     def start(self):
+        """Subscribe synchronously (a stream that cannot be established fails the caller), then read in a thread"""
         self._stop.clear()
+        self.failure = None
+        self._connect()
+        LOGGER.info("COSMOS stream subscribed to %d packet(s)", len(self.packets))
         self._thread = threading.Thread(target=self._run, name="cosmos-stream", daemon=True)
         self._thread.start()
 
     def stop(self):
         self._stop.set()
+        self._close_socket()
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout=STREAM_JOIN_TIMEOUT_SECONDS)
+            if self._thread.is_alive():
+                LOGGER.warning("COSMOS stream thread did not stop within %ss", STREAM_JOIN_TIMEOUT_SECONDS)
+
+    def _close_socket(self):
         socket, self._socket = self._socket, None
         if socket is not None:
             with contextlib.suppress(Exception):
                 socket.close()
-        if self._thread is not None and self._thread is not threading.current_thread():
-            self._thread.join(timeout=5)
 
     def _set_token(self, token: str):
         self.token = token
@@ -276,20 +331,22 @@ class StreamingSocket:
         self._set_token(self.token_provider())
 
     def _connect(self):
-        import websocket  # websocket-client; imported lazily so the plugin loads without it until selected
+        import websocket  # websocket-client; imported here to keep it out of every GDS process's import path
 
         if self.token is None:
             self._refresh_token()
         socket = websocket.create_connection(
             self.cable_url,
             header=[f"Sec-WebSocket-Protocol: {CABLE_PROTOCOLS}"],
-            timeout=SOCKET_READ_TIMEOUT_SECONDS,
+            timeout=CONNECT_TIMEOUT_SECONDS,
             suppress_origin=True,
         )
+        socket.settimeout(SOCKET_READ_TIMEOUT_SECONDS)
+        self._socket = socket  # visible to stop() while the handshake is in progress
         try:
             socket.send(json.dumps({"command": "subscribe", "identifier": self.identifier}))
             deadline = time.monotonic() + SUBSCRIBE_TIMEOUT_SECONDS
-            while time.monotonic() < deadline:
+            while time.monotonic() < deadline and not self._stop.is_set():
                 frame = self._read_frame(socket)
                 if frame is None:
                     continue
@@ -303,12 +360,13 @@ class StreamingSocket:
                 if kind == "disconnect":
                     raise CosmosTransportError(f"COSMOS closed the stream: {frame.get('reason')}")
             else:
+                if self._stop.is_set():
+                    raise CosmosTransportError("stopped during the streaming subscription")
                 raise CosmosTransportError("COSMOS did not confirm the streaming subscription")
             data = {"action": "add", "packets": self.packets, "scope": self.scope, "token": self.token}
             socket.send(json.dumps({"command": "message", "identifier": self.identifier, "data": json.dumps(data)}))
         except BaseException:
-            with contextlib.suppress(Exception):
-                socket.close()
+            self._close_socket()
             raise
         return socket
 
@@ -329,8 +387,11 @@ class StreamingSocket:
         return frame if isinstance(frame, dict) else None
 
     def _deliver(self, frame: dict):
-        if frame.get("type") == "disconnect":
+        kind = frame.get("type")
+        if kind == "disconnect":
             raise CosmosTransportError(f"COSMOS closed the stream: {frame.get('reason')}")
+        if kind == "reject_subscription":
+            raise SubscriptionRejectedError("COSMOS rejected the streaming subscription after it was confirmed")
         message = frame.get("message")
         if not isinstance(message, list):
             return
@@ -338,31 +399,51 @@ class StreamingSocket:
             try:
                 self.callback(packet)
             except Exception as exc:
-                LOGGER.warning(
-                    "Dropped COSMOS packet %s: %s", packet.get("__packet") if isinstance(packet, dict) else packet, exc
-                )
+                name = str(packet.get("__packet")) if isinstance(packet, dict) else type(packet).__name__
+                if name not in self._dropped:
+                    self._dropped.add(name)
+                    LOGGER.warning("Dropped COSMOS packet %s (further drops of it are silent): %s", name, exc)
 
     def _run(self):
+        delay = RECONNECT_DELAY_SECONDS
+        auth_failures = 0
         while not self._stop.is_set():
             try:
-                self._socket = self._connect()
-                LOGGER.info("COSMOS stream subscribed to %d packet(s)", len(self.packets))
+                socket = self._socket
+                if socket is None:
+                    socket = self._connect()
+                    if self._stop.is_set():
+                        self._close_socket()
+                        return
+                    LOGGER.info("COSMOS stream re-subscribed to %d packet(s)", len(self.packets))
+                delay = RECONNECT_DELAY_SECONDS
+                auth_failures = 0
+                last_frame = time.monotonic()
                 while not self._stop.is_set():
-                    frame = self._read_frame(self._socket)
+                    frame = self._read_frame(socket)
                     if frame is not None:
+                        last_frame = time.monotonic()
                         self._deliver(frame)
+                    elif time.monotonic() - last_frame > STREAM_IDLE_TIMEOUT_SECONDS:
+                        raise CosmosTransportError(
+                            f"COSMOS stream silent for {STREAM_IDLE_TIMEOUT_SECONDS:.0f}s (no ping); reconnecting"
+                        )
             except Exception as exc:
+                self._close_socket()
                 if self._stop.is_set():
                     return
                 if isinstance(exc, SubscriptionRejectedError):
                     self.token = None
-                LOGGER.warning(
-                    "COSMOS stream error (%s: %s); reconnecting in %ss",
-                    type(exc).__name__,
-                    exc,
-                    RECONNECT_DELAY_SECONDS,
-                )
-                self._stop.wait(RECONNECT_DELAY_SECONDS)
+                    auth_failures += 1
+                    if auth_failures >= MAX_AUTH_FAILURES:
+                        self.failure = exc
+                        LOGGER.error(
+                            "COSMOS rejected the streaming subscription %d times; giving up on telemetry", auth_failures
+                        )
+                        return
+                LOGGER.warning("COSMOS stream error (%s: %s); reconnecting in %.0fs", type(exc).__name__, exc, delay)
+                self._stop.wait(delay)
+                delay = min(delay * 2, RECONNECT_DELAY_MAX_SECONDS)
 
 
 class CosmosTransport(TransportClient):
@@ -384,6 +465,8 @@ class CosmosTransport(TransportClient):
         self._channel_index: dict[str, Any] = {}
         self._packet_channels: dict[str, Any] = {}
         self._failed_channels: set[str] = set()
+        self._pending_commands = 0
+        self._warned_binary = False
 
     # ---- plugin contract -------------------------------------------------------------------------------------------
     @classmethod
@@ -484,10 +567,16 @@ class CosmosTransport(TransportClient):
             LOGGER.warning(
                 "COSMOS URL %s is plain http: the password and session token travel in clear text", redact_url(url)
             )
+        self.disconnect()
         self.api = CosmosApi(url, self.scope, os.environ.get(PASSWORD_ENV))
-        self.api.authenticate()
-        self._index_channels()
-        packets = self._subscription_packets()
+        try:
+            self._require_websocket_client()
+            self.api.authenticate()
+            self._index_channels()
+            packets = self._subscription_packets()
+        except BaseException:
+            self.disconnect()
+            raise
         LOGGER.info(
             "Connected to COSMOS %s scope=%s target=%s layout=%s; %d packet(s)",
             redact_url(url),
@@ -496,10 +585,24 @@ class CosmosTransport(TransportClient):
             self.naming.layout,
             len(packets),
         )
-        self.stream = StreamingSocket(
-            self.api.cable_url(), self.api.authenticate, self.scope, packets, self._on_packet, token=self.api.token
-        )
-        self.stream.start()
+        try:
+            self.stream = StreamingSocket(
+                self.api.cable_url(), self.api.authenticate, self.scope, packets, self._on_packet, token=self.api.token
+            )
+            self.stream.start()
+        except BaseException:
+            self.disconnect()
+            raise
+
+    @staticmethod
+    def _require_websocket_client():
+        """Fail connect() loudly when websocket-client is missing or shadowed instead of looping in the stream thread"""
+        try:
+            import websocket
+        except ImportError as error:
+            raise CosmosTransportError("websocket-client is required for the cosmos transport") from error
+        if not callable(getattr(websocket, "create_connection", None)):
+            raise CosmosTransportError("the installed 'websocket' module is not websocket-client")
 
     def disconnect(self):
         if self.stream is not None:
@@ -510,7 +613,14 @@ class CosmosTransport(TransportClient):
             self.api = None
 
     def send(self, data):
-        LOGGER.debug("Binary packet not routed (COSMOS uses structured APIs)")
+        """Encoded GDS packets: the echo of a command just issued through the cmd API is expected, anything else
+        (file uplink, raw packets) has no COSMOS path and is reported once"""
+        if self._pending_commands > 0:
+            self._pending_commands -= 1
+            return
+        if not self._warned_binary:
+            self._warned_binary = True
+            LOGGER.warning("Binary GDS packets (file uplink, raw packets) are not carried by the COSMOS transport")
 
     def recv(self, timeout=None):
         return b""
@@ -518,6 +628,7 @@ class CosmosTransport(TransportClient):
     def data_callback(self, data, sender=None):
         if isinstance(data, CmdData):
             self._issue_command(data)
+            self._pending_commands += 1
             return
         super().data_callback(data, sender)
 
@@ -526,10 +637,12 @@ class CosmosTransport(TransportClient):
         """Issue the command through the COSMOS cmd API; a COSMOS rejection is raised to the caller"""
         template = cmd_data.get_template()
         name = self.naming.command_name(template.get_full_name())
-        parameters = {
-            self.naming.command_parameter(spec[0]): python_value(arg)
-            for spec, arg in zip(template.get_args(), cmd_data.get_args(), strict=True)
-        }
+        specs, args = template.get_args(), cmd_data.get_args()
+        if len(specs) != len(args):
+            raise CosmosTransportError(f"{name}: {len(args)} argument(s) for {len(specs)} parameter(s)")
+        parameters: dict[str, Any] = {}
+        for (arg_name, _description, arg_type), arg in zip(specs, args, strict=True):
+            parameters.update(command_parameters(self.naming.command_parameter(arg_name), arg_type, python_value(arg)))
         if self.api is None:
             raise CosmosTransportError(f"Cannot issue {name}: not connected to COSMOS")
         try:
@@ -543,11 +656,22 @@ class CosmosTransport(TransportClient):
     def _index_channels(self):
         self._channel_index = {}
         self._packet_channels = {}
-        for full_name, template in getattr(self.dictionaries, "channel_name", {}).items():
-            self._channel_index[self.naming.channel_key(full_name)] = template
-            packet = self.naming.channel_packet(template)
-            if packet is not None:
-                self._packet_channels[packet] = template
+        try:
+            for full_name, template in getattr(self.dictionaries, "channel_name", {}).items():
+                key = self.naming.channel_key(full_name)
+                if key in self._channel_index:
+                    LOGGER.warning(
+                        "Channels %s and %s collide on COSMOS name %s",
+                        self._channel_index[key].get_full_name(),
+                        full_name,
+                        key,
+                    )
+                self._channel_index[key] = template
+                packet = self.naming.channel_packet(template)
+                if packet is not None:
+                    self._packet_channels[packet] = template
+        except DictionaryError as error:
+            raise CosmosTransportError(f"Dictionary name not usable in COSMOS: {error}") from error
 
     def _subscription_packets(self) -> list[str]:
         names = self.api.call("get_all_tlm_names", self.target) or []
@@ -556,21 +680,30 @@ class CosmosTransport(TransportClient):
                 f"COSMOS target {self.target!r} has no telemetry packets in scope {self.scope!r}; "
                 "is the plugin for this deployment installed?"
             )
-        if self.naming.layout == "fprime":
-            wanted = set(self._packet_channels) | {
-                identifier(packet.get_name()).upper()
-                for packet in (getattr(self.dictionaries, "packet", None) or {}).values()
-            }
-            selected = [name for name in names if name.upper() in wanted]
-            if not selected:
-                LOGGER.warning(
-                    "No COSMOS packet of target %s matches a dictionary channel; subscribing to all %d packet(s)",
-                    self.target,
-                    len(names),
-                )
-                selected = names
-            names = selected
         skipped = {CHANNELIZED_PACKET, UNKNOWN_PACKET}
+        if self.naming.layout == "fprime":
+            try:
+                packet_names = {
+                    identifier(packet.get_name()).upper()
+                    for packet in (getattr(self.dictionaries, "packet", None) or {}).values()
+                }
+            except DictionaryError as error:
+                raise CosmosTransportError(f"Dictionary name not usable in COSMOS: {error}") from error
+            wanted = set(self._packet_channels) | packet_names
+            unmatched = [name for name in names if name.upper() not in wanted | skipped]
+            names = [name for name in names if name.upper() in wanted]
+            if unmatched:
+                LOGGER.info(
+                    "%d COSMOS packet(s) of target %s are not in the dictionary and are not subscribed: %s",
+                    len(unmatched),
+                    self.target,
+                    ", ".join(sorted(unmatched)[:10]),
+                )
+            if not names:
+                raise CosmosTransportError(
+                    f"None of the COSMOS packets of target {self.target!r} matches a dictionary channel or packet; "
+                    "was the plugin generated from this dictionary?"
+                )
         return [f"DECOM__TLM__{self.target}__{name}__CONVERTED" for name in names if name.upper() not in skipped]
 
     def _channels_in(self, packet_name: str | None, items: dict[str, Any]) -> list[tuple[Any, str]]:
@@ -579,7 +712,10 @@ class CosmosTransport(TransportClient):
         if channel_id is not None:
             template = (getattr(self.dictionaries, "channel_id", None) or {}).get(int(channel_id))
             if template is None:
-                LOGGER.warning("COSMOS packet %s carries unknown F Prime channel id %s", packet_name, channel_id)
+                key = f"{packet_name}:{channel_id}"
+                if key not in self._failed_channels:
+                    self._failed_channels.add(key)
+                    LOGGER.warning("COSMOS packet %s carries unknown F Prime channel id %s", packet_name, channel_id)
                 return []
             return [(template, self.naming.dedicated_item(template))]
         dedicated = self._packet_channels.get(packet_name.upper()) if packet_name else None
@@ -630,29 +766,50 @@ class CosmosTransport(TransportClient):
             if self.channel_decoder is not None:
                 self.channel_decoder.send_to_all(ChData(val_obj, ch_time, template))
 
-    @staticmethod
-    def _packet_time(items: dict[str, Any]) -> TimeType:
-        """F Prime time from the FPRIME_TIME_* items, else the COSMOS receive time (workstation time base)"""
+    def _packet_time(self, items: dict[str, Any]) -> TimeType:
+        """F Prime time from the FPRIME_TIME_* items, else the COSMOS receive time (workstation time base)
+
+        A time-base label fprime-gds does not know (project-specific ``TimeBase`` enum) is reported once and the time is
+        kept with the workstation base rather than dropped.
+        """
+        base = items.get("FPRIME_TIME_BASE")
+        if base is not None:
+            try:
+                seconds, useconds = int(items["FPRIME_TIME_SECONDS"]), int(items["FPRIME_TIME_USECONDS"])
+                context = int(items.get("FPRIME_TIME_CONTEXT", 0))
+            except Exception as exc:
+                LOGGER.debug("No usable F Prime time in packet (%s); using the receive time", exc)
+            else:
+                try:
+                    time_base = TimeType.TimeBase(str(base)) if isinstance(base, str) else int(base)
+                    return TimeType(time_base=time_base, time_context=context, seconds=seconds, useconds=useconds)
+                except Exception as exc:
+                    key = f"time base {base!r}"
+                    if key not in self._failed_channels:
+                        self._failed_channels.add(key)
+                        LOGGER.warning(
+                            "F Prime time base %r is unknown to fprime-gds (%s); using %s",
+                            base,
+                            exc,
+                            TIME_BASE_WORKSTATION,
+                        )
+                    return TimeType(
+                        time_base=TimeType.TimeBase(TIME_BASE_WORKSTATION),
+                        time_context=context,
+                        seconds=seconds,
+                        useconds=useconds,
+                    )
+        received = items.get("__time")
         try:
-            base = items["FPRIME_TIME_BASE"]
-            base = TimeType.TimeBase(str(base)) if isinstance(base, str) else int(base)
+            nanoseconds = int(received)
             return TimeType(
-                time_base=base,
-                time_context=int(items.get("FPRIME_TIME_CONTEXT", 0)),
-                seconds=int(items["FPRIME_TIME_SECONDS"]),
-                useconds=int(items["FPRIME_TIME_USECONDS"]),
+                time_base=TimeType.TimeBase(TIME_BASE_WORKSTATION),
+                seconds=nanoseconds // 1_000_000_000,
+                useconds=(nanoseconds % 1_000_000_000) // 1_000,
             )
         except Exception as exc:
-            LOGGER.debug("No usable F Prime time in packet (%s); using the receive time", exc)
-        time_obj = TimeType()
-        received = items.get("__time")
-        with contextlib.suppress(Exception):
-            if received is not None:
-                stamp = datetime.datetime.fromtimestamp(int(received) / 1e9, tz=datetime.timezone.utc).replace(
-                    tzinfo=None
-                )
-                time_obj.set_datetime(stamp, TimeType.TimeBase(TIME_BASE_WORKSTATION))
-        return time_obj
+            LOGGER.debug("No usable receive time in packet (%s); using time zero", exc)
+        return TimeType()
 
 
 def split_stream_packet(packet: dict) -> tuple[str | None, dict[str, Any]]:
@@ -663,8 +820,7 @@ def split_stream_packet(packet: dict) -> tuple[str | None, dict[str, Any]]:
     """
     packet_name = packet.get("__packet") or packet.get("packet")
     if isinstance(packet_name, str) and "__" in packet_name:
-        parts = packet_name.split("__")
-        packet_name = parts[3] if len(parts) >= 5 else parts[-1]
+        packet_name = stream_packet_name(packet_name)
     items: dict[str, Any] = {}
     for key, value in packet.items():
         if key.startswith("__"):
@@ -679,6 +835,18 @@ def split_stream_packet(packet: dict) -> tuple[str | None, dict[str, Any]]:
     return packet_name, items
 
 
+def stream_packet_name(key: str) -> str:
+    """``PACKET`` out of ``DECOM__TLM__TARGET__PACKET__CONVERTED`` (or ``TARGET__PACKET``); tolerates ``__`` in names"""
+    for suffix in ("__CONVERTED", "__RAW", "__FORMATTED", "__WITH_UNITS"):
+        if key.endswith(suffix):
+            key = key[: -len(suffix)]
+            break
+    parts = key.split("__", 3)
+    if parts[0] in ("DECOM", "RAW") and len(parts) == 4:
+        return parts[3]
+    return key.split("__", 1)[-1]
+
+
 def python_value(arg) -> Any:
     """Plain Python value of a decoded F Prime command argument (enum label, bool, number, string, struct, array)"""
     if isinstance(arg, (StringType, EnumType, BoolType, IntegerType, FloatType)):
@@ -689,6 +857,31 @@ def python_value(arg) -> Any:
     if isinstance(val, (list, tuple)):
         return [python_value(v) for v in val]
     return val
+
+
+def command_parameters(name: str, type_class: type, value: Any) -> dict[str, Any]:
+    """COSMOS command parameters for one F Prime argument, flattened as ``fprime_cosmos.items.flatten`` emits them
+
+    Structs become ``NAME.MEMBER`` parameters, arrays of numbers one array parameter, other arrays ``NAME[i]``; a
+    string's ``NAME_LENGTH`` companion is derived by COSMOS from the string and not sent. Booleans are sent as their
+    COSMOS state names, enums as their labels. Parameter names are upper-cased (COSMOS does the same).
+    """
+    if issubclass(type_class, SerializableType):
+        parameters: dict[str, Any] = {}
+        for member, member_type, _format, _description in type_class.MEMBER_LIST:
+            parameters.update(command_parameters(f"{name}.{member}", member_type, value[member]))
+        return parameters
+    if issubclass(type_class, ArrayType):
+        member_type = type_class.MEMBER_TYPE
+        if issubclass(member_type, NumericalType):
+            return {name.upper(): list(value)}
+        parameters = {}
+        for index, member in enumerate(value):
+            parameters.update(command_parameters(f"{name}[{index}]", member_type, member))
+        return parameters
+    if issubclass(type_class, BoolType):
+        return {name.upper(): BOOL_STATES[1] if value else BOOL_STATES[0]}
+    return {name.upper(): value}
 
 
 def coerce_scalar(value: Any, type_class: type) -> Any:
@@ -722,6 +915,8 @@ def coerce_scalar(value: Any, type_class: type) -> Any:
     if issubclass(type_class, FloatType):
         return float(value)
     if issubclass(type_class, StringType):
+        if isinstance(value, dict) and value.get("json_class") == "String":  # COSMOS form of non-UTF-8 bytes
+            return bytes(value.get("raw", [])).decode("utf-8", "replace")
         return str(value)
     raise ValueError(f"Unsupported F Prime type {type_class.__name__}")
 

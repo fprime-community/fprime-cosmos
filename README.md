@@ -33,6 +33,10 @@ the development branch instead:
 pip install "git+https://github.com/nasa/fprime-gds.git@devel"
 ```
 
+Neither a release nor `devel` carries the `data_transport` plugin category yet; the `cosmos` GDS transport below needs
+[nasa/fprime-gds#386](https://github.com/nasa/fprime-gds/pull/386) (install: see that section). The launcher and
+generator do not need it.
+
 Prefer `$OPENC3_API_PASSWORD` over `--cosmos-password`; command-line arguments are visible to other users of the
 machine. The default `--cosmos-url` is plain HTTP on `localhost`; use an `https://` URL for a remote COSMOS.
 
@@ -156,18 +160,30 @@ pytest test/int --dictionary <dictionary>.json \
 | Argument | Meaning |
 | --- | --- |
 | `--data-transport-selection cosmos` | select the COSMOS transport (default is the GDS ZeroMQ transport) |
-| `--cosmos-url` | cmd-tlm-api URL, `http://localhost:2900` by default; `https://` is honored (and recommended for a remote COSMOS: over plain `http://` the password and session token travel in clear text, which the transport warns about) |
+| `--cosmos-url` | cmd-tlm-api URL, `http://localhost:2900` by default; `https://` is honored (and recommended for a remote COSMOS: over plain `http://` the password and session token travel in clear text, which the transport warns about for non-loopback hosts) |
 | `--cosmos-scope` | COSMOS scope, `DEFAULT` |
-| `--cosmos-target` | COSMOS target of the deployment, `FPRIME` (the name this generator emits; with `--cosmos-layout cfs` pass the target name given to the cFS generator, e.g. `FPRIME_APP`) |
+| `--cosmos-target` | COSMOS target of the deployment: the launcher's/generator's `--target-name` (default `FPRIME` in both); with `--cosmos-layout cfs` the target name given to the cFS generator, e.g. `FPRIME_APP` |
 | `--cosmos-layout` | `fprime` (this generator: per-channel packets named after the channel, subscribed selectively) or `cfs` (*experimental*: one-app-one-target cFS generator, upper-cased dotted item names such as `CFSCORE.CMDDISP.COMMANDSDISPATCHED` in `HEALTH`, every packet of the target subscribed; unit-tested against that generator's documented naming only) |
 
-Requires an `fprime-gds` with the `data-transport` plugin category ([nasa/fprime-gds#386](https://github.com/nasa/fprime-gds/pull/386),
-not in a release at the time of writing: install that branch, or the first release that includes it). On older
-releases the entry point is loaded and ignored (the transport logs a warning) and `--data-transport-selection` does not
-exist. Events, files and data products are not yet modeled in COSMOS and the transport maps telemetry channels only, so
-event assertions do not pass through this transport until both the generator emits an events packet and the transport
-decodes it. A COSMOS command rejection is raised to the caller (the test fails), a target without telemetry packets
-fails `connect()`. The password is never placed in URLs, logs, exception messages or the GDS connection URI.
+Requires an `fprime-gds` with the `data_transport` plugin category (`--data-transport-selection`;
+[nasa/fprime-gds#386](https://github.com/nasa/fprime-gds/pull/386), not in a release or on `devel` at the time of
+writing):
+
+```bash
+pip install "fprime-gds @ git+https://github.com/nasa/fprime-gds.git@refs/pull/386/head"   # until a release contains #386
+```
+
+On an fprime-gds without the category the entry point is loaded and ignored and `--data-transport-selection` does not
+exist. The transport is tested against COSMOS 7.5.1 (JSON-RPC `cmd_no_hazardous_check` with structured parameters,
+`/openc3-api/auth/verify` session tokens, the ActionCable `StreamingChannel` frame shape); earlier 6.10+/7.x releases
+are expected to work but are not exercised. Command arguments are flattened like the generator's parameters (structs
+to `NAME.MEMBER`, non-numeric arrays to `NAME[i]`, booleans and enums as state names). Events, files and data products
+are not yet modeled in COSMOS and the transport maps telemetry channels only, so event assertions do not pass through
+this transport until both the generator emits an events packet and the transport decodes it. A COSMOS command
+rejection is raised to the caller (the test fails); a target without telemetry packets fails `connect()`; after three
+consecutive subscription rejections the stream gives up with an error instead of re-sending the password forever. The
+password is never placed in URLs, logs, exception messages or the GDS connection URI, and the authentication requests
+do not follow redirects.
 
 ### Generating the plugin on its own
 
@@ -207,6 +223,9 @@ pytest
 ruff check src tests && ruff format --check src tests
 python tests/update_golden.py   # after intentional emitter changes
 ```
+
+The plugin-discovery and GDS command-line tests in `tests/test_gds_transport.py` skip unless an `fprime-gds` with the
+`data_transport` category (nasa/fprime-gds#386) is installed.
 
 ## Attribution
 

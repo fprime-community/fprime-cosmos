@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fprime-cosmos"
 dynamic = ["version"]
-description = "F Prime / OpenC3 COSMOS: generates and installs a native COSMOS plugin from an F Prime dictionary"
+description = "F Prime / OpenC3 COSMOS: generates and installs a native COSMOS plugin from an F Prime dictionary; ships the cosmos fprime-gds data transport"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
