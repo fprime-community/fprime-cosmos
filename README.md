@@ -149,7 +149,8 @@ bypassed because nobody is there to confirm it). Telemetry comes back from the C
 otherwise a packet named after a dictionary channel (this generator's dedicated packets) by its name, any other
 packet by the channel names its items spell, and the value is reassembled from the items the generator
 flattened (primitives, enums, booleans, strings, arrays and structs) with the F Prime time carried by the
-`FPRIME_TIME_*` items (COSMOS receive time when a packet has none).
+`FPRIME_TIME_*` items (COSMOS receive time, workstation time base, when a packet has none or its values are unusable
+or out of range, or its time base is not one the loaded dictionary defines — reported once).
 
 ```bash
 # COSMOS up and `fprime-cosmos` running (plugin installed, bridge + deployment started, see Quick start)
@@ -182,9 +183,11 @@ newer (password-based `/openc3-api/auth/verify` and token authentication of the 
 6.10.x-7.1.x authenticate differently and are not supported by the transport, although the generated plugin itself
 installs there). Command arguments are flattened like the generator's parameters (structs
 to `NAME.MEMBER`, non-numeric arrays to `NAME[i]`, booleans and enums as state names). Events, files and data products
-are not yet modeled in COSMOS and the transport maps telemetry channels only, so event assertions do not pass through
+are not yet modeled in COSMOS and the transport maps telemetry channels only (a file uplink attempted through it fails
+at once with an error instead of waiting for a handshake), so event assertions do not pass through
 this transport until both the generator emits an events packet and the transport decodes it. A COSMOS command
-rejection is raised to the caller (the test fails); a target without telemetry packets fails `connect()`; after three
+rejection is raised to the caller (the test fails); a target without telemetry packets, a refused password or a
+rejected first subscription fails `connect()` at once; afterwards, after three
 consecutive subscription rejections (before or after COSMOS confirmed the subscription, a non-reconnectable
 disconnect or a password the cmd-tlm-api refuses) without a delivered packet in between, the stream gives up with an error instead of re-sending the
 password forever, and the next command raises that error; an unreachable COSMOS (connection errors, 5xx) is retried

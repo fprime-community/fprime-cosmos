@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import logging
 import math
+import sys
 import threading
 import time
+import types
 from importlib.metadata import entry_points
 from unittest.mock import MagicMock, patch
 
@@ -170,6 +172,7 @@ class TestPluginContract:
             ({"cosmos_url": "http://user:pw@host"}, "must not carry credentials"),
             ({"cosmos_layout": "yamcs"}, "--cosmos-layout"),
             ({"cosmos_target": ""}, "must not be empty"),
+            ({"cosmos_scope": ""}, "must not be empty"),
         ],
     )
     def test_check_arguments_rejects_bad_input(self, kwargs, message):
@@ -255,15 +258,13 @@ class TestCommands:
         ]
         assert type(calls[0][3]["ARG2"]) is float
 
-    def test_command_echo_is_swallowed_but_other_binary_packets_warn_once(self, client, dictionaries, caplog):
+    def test_command_echo_is_swallowed_but_other_binary_packets_fail_the_caller(self, client, dictionaries):
         client.api = MagicMock()
-        with caplog.at_level(logging.WARNING, logger="cosmos_transport"):
-            client.data_callback(CmdData((), dictionaries.command_name["CdhCore.cmdDisp.CMD_NO_OP"]))
-            client.data_callback(b"\x01\x02")  # the encoder's echo of that command
-            assert "not carried" not in caplog.text
-            client.data_callback(b"\x03")  # a file-uplink packet
-            client.data_callback(b"\x04")
-        assert caplog.text.count("not carried by the COSMOS transport") == 1
+        client.data_callback(CmdData((), dictionaries.command_name["CdhCore.cmdDisp.CMD_NO_OP"]))
+        client.data_callback(b"\x01\x02")  # the encoder's echo of that command: accepted silently
+        with pytest.raises(CosmosTransportError, match="not carried by the COSMOS transport"):
+            client.data_callback(b"\x03")  # a file-uplink packet: the uplinker must not wait for a handshake
+        assert client._pending_commands == 0
 
     def test_struct_and_array_arguments_are_flattened_like_the_generator(self):
         from fprime_gds.common.models.serialize.array_type import ArrayType
@@ -355,6 +356,8 @@ class TestCommands:
         ):
             client.data_callback(CmdData((), template))
         assert "CMD_NO_OP" in caplog.text and "boom" in caplog.text
+        with pytest.raises(CosmosTransportError, match="not carried by the COSMOS transport"):
+            client.data_callback(b"\x03")  # no echo follows a failed command: this packet must not be swallowed as one
 
     def test_command_after_the_stream_gave_up_fails_loudly(self, client, dictionaries):
         client.api = MagicMock()
@@ -472,8 +475,21 @@ class TestStreamDecoding:
 
     def test_unknown_channel_id_is_reported_not_guessed(self, client, caplog):
         with caplog.at_level(logging.WARNING, logger="cosmos_transport"):
-            client._on_packet(channel_packet("CdhCore.cmdDisp.CommandErrors", {"FPRIME_CHANNEL_ID": 99, "X": 1}))
-        assert delivered(client) == [] and "unknown F Prime channel id 99" in caplog.text
+            for _ in range(2):
+                client._on_packet(
+                    channel_packet("CdhCore.cmdDisp.CommandErrors", {"FPRIME_CHANNEL_ID": 99, "COMMANDERRORS": 1})
+                )
+        assert delivered(client) == [] and caplog.text.count("unknown F Prime channel id 99") == 1
+
+    def test_index_channels_reports_collisions_and_unusable_names(self, client, dictionaries, caplog):
+        template = dictionaries.channel_name["CdhCore.cmdDisp.CommandErrors"]
+        client.dictionaries = MagicMock(channel_name={"Comp.chan": template, "COMP.Chan": template})
+        with caplog.at_level(logging.WARNING, logger="cosmos_transport"):
+            client._index_channels()
+        assert "collide on COSMOS name COMP.CHAN" in caplog.text
+        client.dictionaries = MagicMock(channel_name={"Comp.chan <%= 1 %>": template})
+        with pytest.raises(CosmosTransportError, match="Dictionary name not usable in COSMOS"):
+            client._index_channels()
 
     def test_packet_without_channel_id_is_resolved_by_packet_name(self, client):
         client._on_packet(channel_packet("CdhCore.cmdDisp.CommandErrors", {"COMMANDERRORS": 5}))
@@ -562,6 +578,23 @@ class TestStreamDecoding:
         assert times == {(TimeType(time_base=1).timeBase.val, 1, 2)}
         assert TimeType(time_base=1).timeBase.val != "TB_WORKSTATION_TIME"
 
+    def test_one_unconvertible_channel_does_not_drop_the_rest_of_a_packet_set_packet(self, dictionaries, caplog):
+        client = CosmosTransport(cosmos_url="http://c", cosmos_target="FPRIME_APP", cosmos_layout="cfs")
+        client.set_pipeline_references(dictionaries, MagicMock(), None)
+        client._index_channels()
+        packet = {
+            "__time": STREAM_TIME,
+            "__packet": "FPRIME_APP__HEALTH",
+            "CDHCORE.CMDDISP.COMMANDSDISPATCHED": 1.5,  # not an integer: cannot be rebuilt
+            "CDHCORE.CMDDISP.COMMANDERRORS": 4,
+        }
+        with caplog.at_level(logging.WARNING, logger="cosmos_transport"):
+            client._on_packet(packet)
+        assert [(ch.get_template().get_full_name(), ch.get_val()) for ch in delivered(client)] == [
+            ("CdhCore.cmdDisp.CommandErrors", 4)
+        ]
+        assert "Cannot rebuild channel CdhCore.cmdDisp.CommandsDispatched" in caplog.text
+
     @pytest.mark.parametrize("tz", ["UTC", "America/Los_Angeles", "Asia/Kolkata"])
     def test_missing_fprime_time_falls_back_to_the_stream_time(self, client, monkeypatch, tz):
         monkeypatch.setenv("TZ", tz)
@@ -576,18 +609,20 @@ class TestStreamDecoding:
         garbage = client._packet_time({"__time": "soon", "FPRIME_TIME_BASE": "TB_NOPE", "FPRIME_TIME_SECONDS": "x"})
         assert garbage.seconds == 0
 
-    def test_unknown_time_base_keeps_the_time_and_warns_once(self, client, caplog):
+    def test_unknown_time_base_uses_the_receive_time_and_warns_once(self, client, caplog):
         items = {
             "FPRIME_TIME_BASE": "TB_CUSTOM",
             "FPRIME_TIME_CONTEXT": 1,
             "FPRIME_TIME_SECONDS": 7,
             "FPRIME_TIME_USECONDS": 8,
+            "__time": 1_700_000_000_500_000_000,
         }
         with caplog.at_level(logging.WARNING, logger="cosmos_transport"):
             first, second = client._packet_time(items), client._packet_time(items)
-        assert (first.seconds, first.useconds, first.timeBase.val) == (7, 8, "TB_WORKSTATION_TIME")
-        assert (second.seconds, second.useconds) == (7, 8)
-        assert caplog.text.count("is unknown to fprime-gds") == 1
+        # flight seconds of an unknown base are not re-labelled as workstation time: the receive time is used instead
+        assert (first.seconds, first.useconds, first.timeBase.val) == (1_700_000_000, 500_000, "TB_WORKSTATION_TIME")
+        assert (second.seconds, second.useconds) == (1_700_000_000, 500_000)
+        assert caplog.text.count("is not in the loaded dictionary") == 1
 
     def test_null_value_is_not_delivered(self, client, caplog):
         with caplog.at_level(logging.WARNING, logger="cosmos_transport"):
@@ -597,6 +632,14 @@ class TestStreamDecoding:
                 )
             )
         assert delivered(client) == [] and "Cannot rebuild channel CdhCore.version.ProjectVersion" in caplog.text
+
+    def test_binary_cosmos_string_is_bounded_before_decoding(self):
+        short = StringType.construct_type("GdsTransportTestS4", 4)
+        with pytest.raises(ValueError, match="greater than 4"):
+            coerce_scalar({"json_class": "String", "raw": [65] * 5}, short)
+        with pytest.raises(ValueError, match="instead of bytes"):
+            coerce_scalar({"json_class": "String", "raw": 400_000_000}, short)  # bytes(n) would allocate n zero bytes
+        assert coerce_scalar({"json_class": "String", "raw": [65, 66]}, short) == "AB"
 
     def test_binary_cosmos_string_is_decoded(self):
         assert (
@@ -625,13 +668,26 @@ class TestStreamDecoding:
             ("CdhCore.cmdDisp.CommandErrors", 5),
         ]
 
+    def test_scheme_less_connection_uri_is_parsed_like_get_connection_uri(self):
+        assert CosmosTransport._parse_uri("host:2900") == "http://host:2900"
+        assert CosmosTransport._parse_uri("cosmos://host:2900") == "http://host:2900"
+        assert CosmosTransport._parse_uri("cosmos+https://host") == "https://host"
+        assert CosmosTransport._parse_uri("https://host") == "https://host"
+        assert (
+            CosmosApi(CosmosTransport._parse_uri("host:2900"), "DEFAULT", "pw")
+            .cable_url()
+            .startswith("ws://host:2900/")
+        )
+
     def test_mixed_case_enum_labels_match_cosmos_upper_cased_states(self):
         enum = EnumType.construct_type("GdsTransportTestColor", {"Red": 0, "StandBy": 1})
         assert coerce_scalar("RED", enum) == "Red"
         assert coerce_scalar("StandBy", enum) == "StandBy"
-        assert coerce_scalar(1, enum) == "StandBy"
+        assert coerce_scalar(1, enum) == "StandBy" and coerce_scalar(1.0, enum) == "StandBy"
         with pytest.raises(ValueError, match="not a GdsTransportTestColor label"):
             coerce_scalar("BLUE", enum)
+        with pytest.raises(ValueError, match="not a GdsTransportTestColor value"):
+            coerce_scalar(0.7, enum)  # a non-integral number must not be truncated onto a label
 
     def test_time_base_label_is_matched_case_insensitively(self, client, caplog):
         items = {
@@ -677,6 +733,9 @@ class TestStreamDecoding:
         enum = EnumType.construct_type("E", {"A": 0, "B": 1})
         assert coerce_scalar("TRUE", BoolType) is True and coerce_scalar("off", BoolType) is False
         assert coerce_scalar(0, BoolType) is False
+        assert coerce_scalar("FALSE", BoolType) is False  # the generator's BOOL states are FALSE / TRUE
+        assert coerce_scalar("1", BoolType) is True and coerce_scalar("ON", BoolType) is True
+        assert coerce_scalar("0", BoolType) is False
         assert coerce_scalar("7", U8Type) == 7 and coerce_scalar(7.0, I32Type) == 7
         assert coerce_scalar("1.5", F32Type) == 1.5
         assert coerce_scalar(3, StringType.construct_type("S", 40)) == "3"
@@ -809,8 +868,19 @@ class TestApi:
             "http://cosmos/openc3-api/auth/verify",
             "http://cosmos/openc3-api/api",
         ]
+        api.session.post.reset_mock()
+        api.session.post.side_effect = [
+            FakeResponse(status=401, text="expired"),
+            FakeResponse(text="tok-again"),
+            FakeResponse(status=401, text="still refused"),
+            FakeResponse(text="tok-never-asked-for"),
+            FakeResponse(status=401, text="still refused"),
+        ]
+        with pytest.raises(CosmosTransportError, match=r"get_cmd_cnt failed \(401\)"):
+            api.call("get_cmd_cnt", "FPRIME", "X")
+        assert [call.args[0].rsplit("/", 1)[-1] for call in api.session.post.call_args_list] == ["api", "verify", "api"]
         api.session.post.side_effect = [FakeResponse(status=401, text="expired"), FakeResponse(status=401, text="no")]
-        with pytest.raises(CosmosTransportError, match=r"failed \(401\)"):
+        with pytest.raises(CosmosTransportError, match=r"/x failed \(401\)"):  # the re-authentication itself is refused
             api.call("get_cmd_cnt", "FPRIME", "X")
 
     def test_call_does_not_reauthenticate_on_403_or_without_a_password(self):
@@ -1381,6 +1451,74 @@ class TestStreamingSocket:
             stream.stop()
         assert "silent for" in caplog.text and sockets[0].closed.is_set()
 
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "handshake-disconnect",
+            "handshake-disconnect-reconnect-true",
+            "no-confirm",
+            "non-101",
+            "closed",
+            "idle",
+            "resubscribe",
+            "complete",
+        ],
+    )
+    def test_transient_stream_errors_are_never_charged_to_the_give_up_budget(self, stream_factory, case):
+        """More than MAX_AUTH_FAILURES transient errors in a row: capped backoff, no give-up, no new token"""
+        rounds = transport.MAX_AUTH_FAILURES + 2
+
+        def unconfirmed(*frames):  # a socket whose subscribe is answered by `frames` instead of a confirmation
+            fake = FakeSocket([])
+            fake.send = lambda text: (fake.sent.append(json.loads(text)), fake.frames.extend(frames))
+            return fake
+
+        def transient():
+            if case == "handshake-disconnect":
+                return unconfirmed(json.dumps({"type": "disconnect", "reason": "server_restart"}))
+            if case == "handshake-disconnect-reconnect-true":
+                return unconfirmed(json.dumps({"type": "disconnect", "reason": "server_restart", "reconnect": True}))
+            if case == "no-confirm":
+                return unconfirmed()
+            fake = FakeSocket(
+                {
+                    "resubscribe": [json.dumps({"identifier": "i", "message": {"__openc3_cable__": "resubscribe"}})],
+                    "complete": [json.dumps({"identifier": "i", "message": []})],
+                }.get(case, [])
+            )
+            if case == "non-101":
+                fake.getstatus = lambda: 503
+            if case == "closed":
+                fake.closed.set()
+            return fake  # "idle": confirms, then stays silent
+
+        sockets = []
+
+        def create(*_args, **_kwargs):
+            if not sockets:  # start() succeeds, then the stream is lost
+                sockets.append(FakeSocket([json.dumps({"type": "disconnect", "reason": "restart"})]))
+            else:
+                sockets.append(transient() if len(sockets) <= rounds else FakeSocket([json.dumps({"type": "ping"})]))
+            return sockets[-1]
+
+        tokens = []
+        stream = stream_factory("ws://c", lambda: tokens.append("tok") or "tok", "DEFAULT", [], lambda p: None)
+        delays = []
+        original_wait = stream._stop.wait
+        with (
+            patch("websocket.create_connection", side_effect=create),
+            patch.object(transport, "RECONNECT_DELAY_SECONDS", 0.001),
+            patch.object(transport, "RECONNECT_DELAY_MAX_SECONDS", 0.004),
+            patch.object(transport, "STREAM_IDLE_TIMEOUT_SECONDS", 0.02),
+            patch.object(transport, "SUBSCRIBE_TIMEOUT_SECONDS", 0.02),
+            patch.object(stream._stop, "wait", side_effect=lambda d: delays.append(d) or original_wait(d)),
+        ):
+            stream.start()
+            assert wait_for(lambda: len(sockets) > rounds + 1 and len(sockets[rounds + 1].sent) == 2)
+            stream.stop()
+        assert stream.failure is None and tokens == ["tok"]  # still trying, and the password was not re-sent
+        assert delays[: rounds + 1] == [0.001, 0.002, 0.004, 0.004, 0.004, 0.004][: rounds + 1]  # capped backoff
+
 
 class TestConnectLifecycle:
     def test_frames_reach_the_channel_decoder_and_secrets_stay_out_of_the_log(self, client, monkeypatch, caplog):
@@ -1541,6 +1679,8 @@ class TestConnectLifecycle:
         for url, expected in [
             ("http://cosmos.example:2900", True),
             ("http://localhost:2900", False),
+            ("http://127.0.0.1:2900", False),
+            ("http://[::1]:2900", False),
             ("https://x", False),
         ]:
             caplog.clear()
@@ -1553,6 +1693,21 @@ class TestConnectLifecycle:
             ):
                 client.connect()
             assert ("clear text" in caplog.text) is expected, url
+
+    @pytest.mark.parametrize(
+        "module, message",
+        [(None, "websocket-client is required"), (types.ModuleType("websocket"), "not websocket-client")],
+    )
+    def test_connect_fails_clearly_without_websocket_client(self, client, monkeypatch, module, message):
+        monkeypatch.setenv(PASSWORD_ENV, "pw")
+        with (
+            patch.dict(sys.modules, {"websocket": module}),
+            patch.object(transport, "CosmosApi") as api_cls,
+            pytest.raises(CosmosTransportError, match=message),
+        ):
+            client.connect()
+        api_cls.return_value.authenticate.assert_not_called()  # no password sent for a connect that cannot work
+        assert client.api is None and client.stream is None
 
     def test_connect_without_password_fails_clearly(self, client, monkeypatch):
         monkeypatch.delenv(PASSWORD_ENV, raising=False)

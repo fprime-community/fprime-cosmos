@@ -152,7 +152,8 @@ class CosmosNaming:
         return identifier(full_name).upper()
 
     def channel_packet(self, template) -> str | None:
-        """Packet name (upper-cased) carrying only this channel, ``None`` when the layout has no such packet"""
+        """Packet name (upper-cased) the transport resolves to this channel alone; ``None`` when the layout's
+        per-channel packets are recognised by their ``FPRIME_CHANNEL_ID`` item only (``cfs``)"""
         return identifier(template.get_full_name()).upper() if self.layout == "fprime" else None
 
     def dedicated_item(self, template) -> str:
@@ -512,7 +513,6 @@ class CosmosTransport(TransportClient):
         self._packet_channels: dict[str, Any] = {}
         self._failed_channels: set[str] = set()
         self._pending_commands = 0
-        self._warned_binary = False
 
     # ---- plugin contract -------------------------------------------------------------------------------------------
     @classmethod
@@ -593,7 +593,9 @@ class CosmosTransport(TransportClient):
         elif connection_uri.startswith(COSMOS_URI_SCHEME):
             url = "http://" + connection_uri[len(COSMOS_URI_SCHEME) :]
         else:
-            url = connection_uri
+            url = (
+                connection_uri if "://" in connection_uri else f"http://{connection_uri}"
+            )  # inverse of get_connection_uri
         cls._check_url(url)
         return url
 
@@ -665,13 +667,13 @@ class CosmosTransport(TransportClient):
 
     def send(self, data):
         """Encoded GDS packets: the echo of a command just issued through the cmd API is expected, anything else
-        (file uplink, raw packets) has no COSMOS path and is reported once"""
+        (file uplink, raw packets) has no COSMOS path and fails the caller rather than stalling it"""
         if self._pending_commands > 0:
             self._pending_commands -= 1
             return
-        if not self._warned_binary:
-            self._warned_binary = True
-            LOGGER.warning("Binary GDS packets (file uplink, raw packets) are not carried by the COSMOS transport")
+        raise CosmosTransportError(
+            "Binary GDS packets (file uplink, raw packets) are not carried by the COSMOS transport"
+        )
 
     def recv(self, timeout=None):
         return b""
@@ -830,11 +832,12 @@ class CosmosTransport(TransportClient):
                 self.channel_decoder.send_to_all(ChData(val_obj, ch_time, template))
 
     def _packet_time(self, items: dict[str, Any]) -> TimeType:
-        """F Prime time from the FPRIME_TIME_* items, else the COSMOS receive time (workstation time base)
+        """F Prime time from the FPRIME_TIME_* items; the COSMOS receive time (workstation time base) when they are
+        missing, unparsable or out of range; time zero when the packet has no usable ``__time`` either
 
         The label is resolved through the ``TimeBase`` enum of the loaded dictionary (so project-specific bases work);
-        a label absent from it (a COSMOS plugin generated from another dictionary) is reported once and the time is
-        kept with the workstation base rather than dropped.
+        a label absent from it (a COSMOS plugin generated from another dictionary) is reported once and the packet is
+        kept with the receive time rather than dropped or re-labelled as workstation time.
         """
         base = items.get("FPRIME_TIME_BASE")
         if base is not None:
@@ -852,16 +855,15 @@ class CosmosTransport(TransportClient):
                     if key not in self._failed_channels:
                         self._failed_channels.add(key)
                         LOGGER.warning(
-                            "F Prime time base %r is unknown to fprime-gds (%s); using %s",
+                            "F Prime time base %r is not in the loaded dictionary (%s); using the COSMOS receive time",
                             base,
                             exc,
-                            TIME_BASE_WORKSTATION,
                         )
-                    time_base = TimeType.TimeBase(TIME_BASE_WORKSTATION)
-                try:
-                    return TimeType(time_base=time_base, time_context=context, seconds=seconds, useconds=useconds)
-                except Exception as exc:  # out-of-range seconds/useconds/context: keep the packet, use the receive time
-                    LOGGER.debug("F Prime time out of range (%s); using the receive time", exc)
+                else:
+                    try:
+                        return TimeType(time_base=time_base, time_context=context, seconds=seconds, useconds=useconds)
+                    except Exception as exc:  # out-of-range seconds/useconds/context: keep the packet, receive time
+                        LOGGER.debug("F Prime time out of range (%s); using the receive time", exc)
         received = items.get("__time")
         try:
             nanoseconds = int(received)
@@ -978,6 +980,8 @@ def coerce_scalar(value: Any, type_class: type) -> Any:
             if value.upper() not in by_upper:
                 raise ValueError(f"{value!r} is not a {type_class.__name__} label")
             return by_upper[value.upper()]
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError(f"{value!r} is not a {type_class.__name__} value")
         number = int(value)
         for label, number_of_label in type_class.ENUM_DICT.items():
             if number_of_label == number:
@@ -991,7 +995,13 @@ def coerce_scalar(value: Any, type_class: type) -> Any:
         return float(value)
     if issubclass(type_class, StringType):
         if isinstance(value, dict) and value.get("json_class") == "String":  # COSMOS form of non-UTF-8 bytes
-            return bytes(value.get("raw", [])).decode("utf-8", "replace")
+            raw = value.get("raw")
+            if not isinstance(raw, (list, bytes, bytearray)):
+                raise ValueError(f"COSMOS binary string carries {type(raw).__name__} instead of bytes")
+            limit = getattr(type_class, "MAX_LENGTH", None)
+            if limit is not None and len(raw) > limit:  # checked before allocating/decoding anything
+                raise ValueError(f"String size {len(raw)} is greater than {limit}")
+            return bytes(raw).decode("utf-8", "replace")
         return str(value)
     raise ValueError(f"Unsupported F Prime type {type_class.__name__}")
 
