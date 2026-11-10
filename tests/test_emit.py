@@ -140,3 +140,42 @@ def test_channel_modifiers_limits_default_to_type_range_and_neighbouring_bound()
     assert emit._channel_modifiers(StubChannel("{}"), item) == []
     enum_item = CosmosItem("V", 8, "UINT", states=(("A", 0),))
     assert emit._channel_modifiers(StubChannel("{:d}"), enum_item) == []
+
+
+def test_events_packet_precedes_the_catch_all(reference_dictionary):
+    layout = reference_dictionary.layout
+    text = emit.emit_packets(reference_dictionary)
+    assert 0 < text.index("FPRIME_EVENTS") < text.index("FPRIME_UNKNOWN")
+    block = "\n".join(emit.emit_events_packet(layout))
+    assert f"APPEND_ID_ITEM FPRIME_DESCRIPTOR {layout.descriptor_bits} UINT {layout.log_descriptor}" in block
+    assert "APPEND_ITEM RECORD 0 BLOCK" in block
+
+
+@pytest.mark.parametrize("name", ["fprime_events", "Fprime_Channels", "FPRIME_UNKNOWN"])
+def test_packet_named_like_a_plugin_packet_is_refused(reference_dictionary, name):
+    from unittest.mock import MagicMock, PropertyMock, patch
+
+    from fprime_gds.common.templates.pkt_template import PktTemplate
+
+    fake = MagicMock(spec=PktTemplate)
+    fake.get_name.return_value = name
+    with (
+        patch.object(type(reference_dictionary), "packets", new_callable=PropertyMock, return_value=[fake]),
+        pytest.raises(DictionaryError, match="collides"),
+    ):
+        emit.emit_packets(reference_dictionary)
+
+
+def test_events_packet_is_skipped_without_a_log_descriptor(reference_dictionary):
+    from dataclasses import replace
+    from unittest.mock import patch
+
+    types_without_log = {k: v for k, v in reference_dictionary.layout.packet_types.items() if k != "FW_PACKET_LOG"}
+    layout = replace(reference_dictionary.layout, packet_types=types_without_log)
+    with patch.object(reference_dictionary, "layout", layout):
+        text = emit.emit_packets(reference_dictionary)
+    assert "FPRIME_EVENTS" not in text and text.rstrip().endswith('"Remaining packet bytes"')
+    assert "not handled by this plugin (events, files, data products)" in text  # the catch-all says so
+    assert "(events, files" not in emit.emit_packets(reference_dictionary)  # ...only when events are not modeled
+    with pytest.raises(DictionaryError, match="FW_PACKET_LOG"):
+        emit.emit_events_packet(layout)
