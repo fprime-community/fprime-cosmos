@@ -149,3 +149,17 @@ def test_events_packet_precedes_the_catch_all(reference_dictionary):
     block = "\n".join(emit.emit_events_packet(layout))
     assert f"APPEND_ID_ITEM FPRIME_DESCRIPTOR {layout.descriptor_bits} UINT {layout.log_descriptor}" in block
     assert "APPEND_ITEM RECORD 0 BLOCK" in block
+
+
+def test_packet_named_like_a_plugin_packet_is_refused(reference_dictionary):
+    from unittest.mock import MagicMock, PropertyMock, patch
+
+    from fprime_gds.common.templates.pkt_template import PktTemplate
+
+    fake = MagicMock(spec=PktTemplate)
+    fake.get_name.return_value = "fprime_events"
+    with (
+        patch.object(type(reference_dictionary), "packets", new_callable=PropertyMock, return_value=[fake]),
+        pytest.raises(DictionaryError, match="collides"),
+    ):
+        emit.emit_packets(reference_dictionary)

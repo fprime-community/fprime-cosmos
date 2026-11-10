@@ -646,6 +646,35 @@ class TestStreamDecoding:
         assert (events[0].get_time().seconds, events[0].get_time().useconds) == (1234, 5678)
         assert client.channel_decoder.send_to_all.call_count == 0  # an event packet never becomes a channel
 
+    def test_undecodable_event_records_warn_once(self, dictionaries, caplog):
+        from fprime_gds.common.decoders.event_decoder import EventDecoder
+
+        decoder = EventDecoder(dictionaries.event_id)
+        decoder.send_to_all = MagicMock()
+        client = CosmosTransport(cosmos_url="http://c", cosmos_target="FPRIME")
+        client.set_pipeline_references(dictionaries, MagicMock(), decoder)
+        client._index_channels()
+        packet = {"__packet": "DECOM__TLM__FPRIME__FPRIME_EVENTS__CONVERTED", "FPRIME_DESCRIPTOR": 2}
+        with caplog.at_level(logging.WARNING, logger="cosmos_transport"):
+            for _ in range(5):
+                client._on_packet({**packet, "RECORD": [0xFF, 0xFF, 0xFF, 0xFF, 1, 2, 3]})
+            client._on_packet({**packet, "RECORD": "\x00\x00\x00\x01"})  # plain-text BLOCK form is accepted
+        assert caplog.text.count("Cannot decode F Prime event record") <= 2
+        assert decoder.send_to_all.call_count == 0
+
+    def test_dictionary_packet_named_like_a_plugin_packet_is_refused(self, dictionaries):
+        from unittest.mock import PropertyMock
+
+        client = CosmosTransport(cosmos_url="http://c", cosmos_target="FPRIME")
+        client.set_pipeline_references(dictionaries, MagicMock(), MagicMock())
+        with (
+            patch.object(
+                type(dictionaries), "packet_set_name", new_callable=PropertyMock, return_value={"Fprime_Events": 1}
+            ),
+            pytest.raises(CosmosTransportError, match="collides"),
+        ):
+            client._index_channels()
+
     def test_events_packet_is_subscribed_but_not_a_channel(self, client, monkeypatch):
         monkeypatch.setenv(PASSWORD_ENV, "pw")
         fake_api = MagicMock()

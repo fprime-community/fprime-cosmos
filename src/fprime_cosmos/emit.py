@@ -27,6 +27,7 @@ CHANNELIZED_PACKET = "FPRIME_CHANNELS"
 UNKNOWN_PACKET = "FPRIME_UNKNOWN"
 EVENTS_PACKET = "FPRIME_EVENTS"
 EVENT_RECORD_ITEM = "RECORD"
+RESERVED_PACKETS = frozenset({CHANNELIZED_PACKET, UNKNOWN_PACKET, EVENTS_PACKET})
 CHANNELS_BLOCK = "CHANNELS"
 DESCRIPTOR_ITEM = "FPRIME_DESCRIPTOR"
 OPCODE_ITEM = "FPRIME_OPCODE"
@@ -299,6 +300,10 @@ def emit_packets(dictionary: FprimeDictionary) -> str:
     """Packetized telemetry followed by the catch-all (packets.txt sorts, and so loads, after channels.txt)"""
     blocks = [header(dictionary)]
     for packet in dictionary.packets:
+        if full_name(packet).upper() in RESERVED_PACKETS:
+            raise DictionaryError(
+                f"Telemetry packet {packet.get_name()!r} collides with the plugin's {full_name(packet).upper()} packet"
+            )
         blocks.append("\n".join(emit_packet(packet, dictionary.layout)) + "\n")
     blocks.append("\n".join(emit_events_packet(dictionary.layout)) + "\n")
     blocks.append("\n".join(emit_unknown_packet(dictionary.layout)) + "\n")

@@ -48,6 +48,7 @@ from fprime_cosmos.emit import (
     EVENTS_PACKET,
     OPCODE_ITEM,
     PACKET_ID_ITEM,
+    RESERVED_PACKETS,
     TIME_ITEM,
     TIME_ITEMS,
     UNKNOWN_PACKET,
@@ -713,6 +714,11 @@ class CosmosTransport(TransportClient):
     def _index_channels(self):
         self._channel_index = {}
         self._packet_channels = {}
+        for packet_name in getattr(self.dictionaries, "packet_set_name", {}) or {}:
+            if packet_name.upper() in RESERVED_PACKETS:
+                raise CosmosTransportError(
+                    f"Dictionary packet {packet_name!r} collides with the plugin's {packet_name.upper()} packet"
+                )
         try:
             for full_name, template in getattr(self.dictionaries, "channel_name", {}).items():
                 key = self.naming.channel_key(full_name)
@@ -747,6 +753,8 @@ class CosmosTransport(TransportClient):
             except DictionaryError as error:
                 raise CosmosTransportError(f"Dictionary name not usable in COSMOS: {error}") from error
             wanted = set(self._packet_channels) | packet_names | {EVENTS_PACKET}
+            if EVENTS_PACKET not in {name.upper() for name in names}:
+                LOGGER.info("COSMOS target %s has no %s packet; events are not delivered", self.target, EVENTS_PACKET)
             unmatched = [name for name in names if name.upper() not in wanted | skipped]
             names = [name for name in names if name.upper() in wanted]
             if unmatched:
@@ -768,6 +776,8 @@ class CosmosTransport(TransportClient):
         record = items.get(EVENT_RECORD_ITEM)
         if isinstance(record, dict):  # COSMOS form of a binary BLOCK
             record = record.get("raw")
+        if isinstance(record, str):  # COSMOS sends a BLOCK that happens to be valid UTF-8 as plain text
+            record = record.encode("utf-8")
         if not isinstance(record, (list, bytes, bytearray)) or self.event_decoder is None:
             if "events" not in self._failed_channels:
                 self._failed_channels.add("events")
@@ -776,7 +786,10 @@ class CosmosTransport(TransportClient):
         try:
             decoded = self.event_decoder.decode_api(bytes(record))
         except Exception as exc:
-            LOGGER.warning("Cannot decode F Prime event record from COSMOS: %s", exc)
+            key = f"event:{type(exc).__name__}:{exc}"[:120]
+            if key not in self._failed_channels:
+                self._failed_channels.add(key)
+                LOGGER.warning("Cannot decode F Prime event record from COSMOS (repeats are silent): %s", exc)
             return
         for event in decoded if isinstance(decoded, list) else ([decoded] if decoded is not None else []):
             self.event_decoder.send_to_all(event)
