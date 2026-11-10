@@ -17,8 +17,8 @@ F Prime deployment  <-- framing / transport -->  fprime-comm-bridge  <-- UDP, F 
 
 ## Installation
 
-Requires Python 3.10 or newer and COSMOS 6.10.0 or newer (the generated gem declares
-`openc3_cosmos_minimum_version`). The local-Docker defaulting described under Options uses the `docker` and `ip`
+Requires Python 3.10 or newer and COSMOS 6.10.0 or newer for the generated plugin (the gem declares
+`openc3_cosmos_minimum_version`); the fprime-gds data transport below needs COSMOS 7.2.0 or newer. The local-Docker defaulting described under Options uses the `docker` and `ip`
 command-line tools.
 
 ```bash
@@ -146,7 +146,8 @@ serves upgrades that plugin in place (COSMOS forbids two plugins defining the sa
 `cmd_no_hazardous_check` calls (target, command name, `{PARAMETER: value}`; the hazardous-command confirmation is
 bypassed because nobody is there to confirm it). Telemetry comes back from the COSMOS streaming websocket
 (`/openc3-api/cable`, DECOM CONVERTED values): a packet carrying `FPRIME_CHANNEL_ID` is resolved by channel id,
-any other packet by the channel names its items spell, and the value is reassembled from the items the generator
+otherwise a packet named after a dictionary channel (this generator's dedicated packets) by its name, any other
+packet by the channel names its items spell, and the value is reassembled from the items the generator
 flattened (primitives, enums, booleans, strings, arrays and structs) with the F Prime time carried by the
 `FPRIME_TIME_*` items (COSMOS receive time when a packet has none).
 
@@ -163,7 +164,7 @@ pytest test/int --dictionary <dictionary>.json \
 | `--cosmos-url` | cmd-tlm-api URL, `http://localhost:2900` by default; `https://` is honored (and recommended for a remote COSMOS: over plain `http://` the password and session token travel in clear text, which the transport warns about for non-loopback hosts) |
 | `--cosmos-scope` | COSMOS scope, `DEFAULT` |
 | `--cosmos-target` | COSMOS target of the deployment: the launcher's/generator's `--target-name` (default `FPRIME` in both) or the `fprime_target_name` plugin variable when it was overridden; with `--cosmos-layout cfs` the target name given to the cFS generator, e.g. `FPRIME_APP` |
-| `--cosmos-layout` | `fprime` (this generator: per-channel packets named after the channel, subscribed selectively) or `cfs` (*experimental*: one-app-one-target cFS generator, upper-cased dotted item names such as `CFSCORE.CMDDISP.COMMANDSDISPATCHED` in `HEALTH`, every packet of the target subscribed; unit-tested against that generator's documented naming only) |
+| `--cosmos-layout` | `fprime` (this generator: per-channel packets named after the channel, subscribed selectively) or `cfs` (*experimental*: one-app-one-target cFS generator — every packet of the target is subscribed; per-channel packets carry the channel leaf item as here, packet-set packets such as `HEALTH` the upper-cased dotted names such as `CFSCORE.CMDDISP.COMMANDSDISPATCHED`; unit-tested against that generator's source only) |
 
 Requires an `fprime-gds` with the `data_transport` plugin category (`--data-transport-selection`;
 [nasa/fprime-gds#386](https://github.com/nasa/fprime-gds/pull/386), not in a release or on `devel` at the time of
@@ -184,9 +185,10 @@ to `NAME.MEMBER`, non-numeric arrays to `NAME[i]`, booleans and enums as state n
 are not yet modeled in COSMOS and the transport maps telemetry channels only, so event assertions do not pass through
 this transport until both the generator emits an events packet and the transport decodes it. A COSMOS command
 rejection is raised to the caller (the test fails); a target without telemetry packets fails `connect()`; after three
-consecutive subscription rejections (before or after COSMOS confirmed the subscription, or a non-reconnectable
-disconnect) without a delivered packet in between, the stream gives up with an error instead of re-sending the
-password forever, and the next command raises that error. The
+consecutive subscription rejections (before or after COSMOS confirmed the subscription, a non-reconnectable
+disconnect or a password the cmd-tlm-api refuses) without a delivered packet in between, the stream gives up with an error instead of re-sending the
+password forever, and the next command raises that error; an unreachable COSMOS (connection errors, 5xx) is retried
+with the same backoff without counting toward that limit. The
 password is never placed in URLs, logs, exception messages or the GDS connection URI, and the authentication requests
 do not follow redirects (nor do the JSON-RPC calls or the websocket handshake).
 

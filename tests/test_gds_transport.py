@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import threading
 import time
 from importlib.metadata import entry_points
@@ -391,7 +392,8 @@ class TestNaming:
         naming = CosmosNaming("cfs")
         template = dictionaries.channel_name["CdhCore.cmdDisp.CommandsDispatched"]
         assert naming.channel_packet(template) is None
-        assert naming.dedicated_item(template) == "CDHCORE.CMDDISP.COMMANDSDISPATCHED"
+        assert naming.dedicated_item(template) == "COMMANDSDISPATCHED"  # per-channel packets carry the leaf name
+        assert naming.channel_key(template.get_full_name()) == "CDHCORE.CMDDISP.COMMANDSDISPATCHED"
         with pytest.raises(ValueError, match="Unknown COSMOS layout"):
             CosmosNaming("yamcs")
 
@@ -602,6 +604,53 @@ class TestStreamDecoding:
         )
         assert transport.stream_packet_name("DECOM__TLM__TGT__A__B__CONVERTED") == "A__B"
         assert transport.stream_packet_name("FPRIME__HEALTH") == "HEALTH"
+
+    def test_cfs_per_channel_packet_with_leaf_item_and_dotted_fallback(self, dictionaries):
+        client = CosmosTransport(cosmos_url="http://c", cosmos_target="FPRIME_APP", cosmos_layout="cfs")
+        client.set_pipeline_references(dictionaries, MagicMock(), None)
+        client._index_channels()
+        channel_id = dictionaries.channel_name["CdhCore.cmdDisp.CommandErrors"].get_id()
+        base = {"__time": STREAM_TIME, "__type": "PACKET"}
+        leaf = {**base, "__packet": "DECOM__TLM__FPRIME_APP__CDHCORE.CMDDISP.COMMANDERRORS__CONVERTED"}
+        leaf.update(FPRIME_TIME)
+        leaf.update({"FPRIME_CHANNEL_ID": channel_id, "COMMANDERRORS": 4})
+        client._on_packet(leaf)
+        dotted = {**base, "__packet": "DECOM__TLM__FPRIME_APP__CDHCORE.CMDDISP.COMMANDERRORS__CONVERTED"}
+        dotted.update(FPRIME_TIME)
+        dotted.update({"FPRIME_CHANNEL_ID": channel_id, "CDHCORE.CMDDISP.COMMANDERRORS": 5})
+        client._on_packet(dotted)
+        assert [(ch.template.get_full_name(), ch.get_val()) for ch in delivered(client)] == [
+            ("CdhCore.cmdDisp.CommandErrors", 4),
+            ("CdhCore.cmdDisp.CommandErrors", 5),
+        ]
+
+    def test_mixed_case_enum_labels_match_cosmos_upper_cased_states(self):
+        enum = EnumType.construct_type("GdsTransportTestColor", {"Red": 0, "StandBy": 1})
+        assert coerce_scalar("RED", enum) == "Red"
+        assert coerce_scalar("StandBy", enum) == "StandBy"
+        assert coerce_scalar(1, enum) == "StandBy"
+        with pytest.raises(ValueError, match="not a GdsTransportTestColor label"):
+            coerce_scalar("BLUE", enum)
+
+    def test_time_base_label_is_matched_case_insensitively(self, client):
+        items = {
+            "FPRIME_TIME_BASE": "tb_workstation_time",
+            "FPRIME_TIME_CONTEXT": 0,
+            "FPRIME_TIME_SECONDS": 9,
+            "FPRIME_TIME_USECONDS": 1,
+        }
+        assert (client._packet_time(items).seconds, client._packet_time(items).timeBase.val) == (
+            9,
+            "TB_WORKSTATION_TIME",
+        )
+
+    def test_non_finite_floats_arrive_in_cosmos_float_form(self):
+        from fprime_gds.common.models.serialize.numerical_types import F64Type
+
+        assert math.isnan(coerce_scalar({"json_class": "Float", "raw": "NaN"}, F64Type))
+        assert coerce_scalar({"json_class": "Float", "raw": "-Infinity"}, F64Type) == -math.inf
+        with pytest.raises(ValueError):
+            coerce_scalar({"json_class": "Float", "raw": "NaN"}, U8Type)
 
     def test_coerce_scalar_types(self):
         enum = EnumType.construct_type("E", {"A": 0, "B": 1})
@@ -1062,6 +1111,151 @@ class TestStreamingSocket:
             assert wait_for(lambda: stream.failure is not None)
         assert len(sockets) == 1 and "re-authentication failed" in caplog.text and "giving up" in caplog.text
 
+    def test_unreachable_cosmos_during_reauthentication_is_not_charged_to_the_budget(self, stream_factory, caplog):
+        sockets = []
+        calls = []
+
+        def provide():
+            calls.append(1)
+            if len(calls) == 1:
+                return "tok-first"
+            if len(calls) <= 1 + transport.MAX_AUTH_FAILURES:
+                raise transport.CosmosUnreachableError("Cannot reach COSMOS at http://c: refused")
+            return "tok-again"
+
+        def create(*_args, **_kwargs):
+            frames = [json.dumps({"type": "reject_subscription"})] if len(sockets) == 0 else []
+            sockets.append(FakeSocket(frames))
+            return sockets[-1]
+
+        stream = stream_factory("ws://c", provide, "DEFAULT", [], lambda p: None)
+        with (
+            patch("websocket.create_connection", side_effect=create),
+            patch.object(transport, "RECONNECT_DELAY_SECONDS", 0.01),
+            caplog.at_level(logging.WARNING, logger="cosmos_transport"),
+        ):
+            stream.start()
+            assert wait_for(lambda: len(sockets) >= 2 and len(sockets[1].sent) == 2)
+            stream.stop()
+        assert stream.failure is None and len(calls) == 2 + transport.MAX_AUTH_FAILURES
+        assert "Cannot reach COSMOS" in caplog.text and "giving up" not in caplog.text
+
+    def test_non_reconnectable_disconnect_before_confirmation_counts_as_a_rejection(self, stream_factory, caplog):
+        sockets = []
+        tokens = []
+
+        def create(*_args, **_kwargs):
+            fake = FakeSocket([])
+            fake.send = lambda text, fake=fake: (
+                fake.sent.append(json.loads(text))
+                or fake.frames.extend(
+                    [
+                        json.dumps({"type": "welcome"}),
+                        json.dumps({"type": "disconnect", "reason": "unauthorized", "reconnect": False}),
+                    ]
+                )
+            )
+            sockets.append(fake)
+            return fake
+
+        def provide():
+            tokens.append(f"tok-{len(tokens)}")
+            return tokens[-1]
+
+        stream = stream_factory("ws://c", provide, "DEFAULT", [], lambda p: None)
+        with (
+            patch("websocket.create_connection", side_effect=create),
+            patch.object(transport, "RECONNECT_DELAY_SECONDS", 0.01),
+            caplog.at_level(logging.WARNING, logger="cosmos_transport"),
+            pytest.raises(CosmosTransportError, match="unauthorized"),
+        ):
+            stream.start()
+        assert len(sockets) == 1 and stream._thread is None
+
+    @pytest.mark.parametrize(
+        "marker, message", [([], "complete marker"), ({"__openc3_cable__": "resubscribe"}, "resubscribe")]
+    )
+    def test_end_of_stream_markers_trigger_a_reconnect(self, stream_factory, caplog, marker, message):
+        sockets = []
+
+        def create(*_args, **_kwargs):
+            frames = [json.dumps({"identifier": "i", "message": marker})] if not sockets else []
+            sockets.append(FakeSocket(frames))
+            return sockets[-1]
+
+        stream = stream_factory("ws://c", lambda: "tok", "DEFAULT", [], lambda p: None)
+        with (
+            patch("websocket.create_connection", side_effect=create),
+            patch.object(transport, "RECONNECT_DELAY_SECONDS", 0.01),
+            caplog.at_level(logging.WARNING, logger="cosmos_transport"),
+        ):
+            stream.start()
+            assert wait_for(lambda: len(sockets) >= 2 and len(sockets[1].sent) == 2)
+            stream.stop()
+        assert sockets[0].closed.is_set() and message in caplog.text
+
+    @pytest.mark.parametrize(
+        "rescue, expect_failure",
+        [({"type": "ping"}, True), ({"identifier": "i", "message": [{"__packet": "P"}]}, False)],
+    )
+    def test_only_a_delivered_packet_resets_the_give_up_counter(self, stream_factory, rescue, expect_failure):
+        """Two rejections, a socket that only pings, then a rejection must give up; a delivered packet must reset"""
+        sockets = []
+        reject = json.dumps({"type": "reject_subscription"})
+
+        def create(*_args, **_kwargs):
+            index = len(sockets)
+            frames = [json.dumps(rescue), json.dumps({"type": "disconnect", "reason": "r"})] if index == 2 else [reject]
+            sockets.append(FakeSocket(frames if index < 5 else []))
+            return sockets[-1]
+
+        stream = stream_factory("ws://c", lambda: "tok", "DEFAULT", [], lambda p: None)
+        with (
+            patch("websocket.create_connection", side_effect=create),
+            patch.object(transport, "RECONNECT_DELAY_SECONDS", 0.01),
+        ):
+            stream.start()
+            if expect_failure:
+                assert wait_for(lambda: stream.failure is not None)
+                assert len(sockets) == 4  # confirmed, rejected, rejected, ping-only then the third rejection
+            else:
+                assert wait_for(lambda: len(sockets) >= 6)
+                assert stream.failure is None
+            stream.stop()
+
+    def test_pings_keep_the_stream_alive(self, stream_factory):
+        class PingingSocket(FakeSocket):
+            def recv(self):
+                if not self.frames and not self.closed.is_set():
+                    threading.Event().wait(0.01)
+                    return json.dumps({"type": "ping"})
+                return super().recv()
+
+        sockets = []
+
+        def create(*_args, **_kwargs):
+            sockets.append(PingingSocket([]))
+            return sockets[-1]
+
+        stream = stream_factory("ws://c", lambda: "tok", "DEFAULT", [], lambda p: None)
+        with (
+            patch("websocket.create_connection", side_effect=create),
+            patch.object(transport, "STREAM_IDLE_TIMEOUT_SECONDS", 0.05),
+        ):
+            stream.start()
+            threading.Event().wait(0.3)
+            stream.stop()
+        assert len(sockets) == 1
+
+    def test_handshake_socket_errors_are_transport_errors(self, stream_factory):
+        stream = stream_factory("ws://c", lambda: "tok-s0ck", "DEFAULT", [], lambda p: None)
+        with (
+            patch("websocket.create_connection", side_effect=ConnectionRefusedError("refused")),
+            pytest.raises(transport.CosmosUnreachableError, match="Cannot open the COSMOS stream") as info,
+        ):
+            stream.start()
+        assert "tok-s0ck" not in str(info.value)
+
     def test_gives_up_after_repeated_rejections(self, stream_factory, caplog):
         sockets = []
 
@@ -1171,12 +1365,24 @@ class TestConnectLifecycle:
             "DECOM__TLM__FPRIME__CDHCORE.CMDDISP.COMMANDERRORS__CONVERTED",
         ]
         assert "1 COSMOS packet(s) of target FPRIME are not in the dictionary" in caplog.text
-        assert "SOMETHING_ELSE" in caplog.text
+        assert "SOMETHING_ELSE" in caplog.text and ", ..." not in caplog.text
         fake_stream.start.assert_called_once_with()
         client.disconnect()
         fake_stream.stop.assert_called_once_with()
         fake_api.session.close.assert_called_once_with()
         assert client.stream is None and client.api is None
+
+    def test_long_unmatched_packet_lists_are_marked_as_truncated(self, client, monkeypatch, caplog):
+        monkeypatch.setenv(PASSWORD_ENV, "pw")
+        fake_api = MagicMock()
+        fake_api.call.return_value = ["CDHCORE.CMDDISP.COMMANDERRORS"] + [f"EXTRA_{i:02d}" for i in range(12)]
+        with (
+            patch.object(transport, "CosmosApi", return_value=fake_api),
+            patch.object(transport, "StreamingSocket"),
+            caplog.at_level(logging.INFO, logger="cosmos_transport"),
+        ):
+            client.connect()
+        assert "12 COSMOS packet(s)" in caplog.text and "EXTRA_09, ..." in caplog.text and "EXTRA_10" not in caplog.text
 
     def test_cfs_layout_subscribes_to_every_target_packet(self, dictionaries, monkeypatch):
         monkeypatch.setenv(PASSWORD_ENV, "pw")

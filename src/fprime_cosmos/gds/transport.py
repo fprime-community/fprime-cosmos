@@ -4,8 +4,9 @@ Architecture: deployment -> COSMOS (its own interface / the fprime-cosmos bridge
 Commands are issued through the COSMOS JSON-RPC API with ``cmd_no_hazardous_check`` (structured parameters; the
 hazardous-command confirmation step is bypassed because nobody is there to confirm it). Telemetry is received through
 the cmd-tlm-api streaming websocket (ActionCable ``StreamingChannel``, DECOM CONVERTED values) and rebuilt into GDS
-channel data: a packet carrying the generator's ``FPRIME_CHANNEL_ID`` item is resolved by channel id, any other packet
-by the channel names its items spell (``CosmosNaming``), and the value is reassembled from the items exactly as
+channel data: a packet carrying the generator's ``FPRIME_CHANNEL_ID`` item is resolved by channel id, a packet named
+after a dictionary channel by its name, any other packet by the channel names its items spell (``CosmosNaming``), and
+the value is reassembled from the items exactly as
 ``fprime_cosmos.items.flatten`` split it (primitives, enums, strings, arrays and structs). Events, files and data
 products are not delivered: the generator does not model them yet and this transport maps telemetry channels only.
 
@@ -103,6 +104,10 @@ class CosmosTransportError(TransportationException):
     """Raised when COSMOS rejects a request or the stream cannot be established"""
 
 
+class CosmosUnreachableError(CosmosTransportError):
+    """COSMOS could not be reached or answered a server-side error: retry, but do not charge the credential budget"""
+
+
 class SubscriptionRejectedError(CosmosTransportError):
     """COSMOS refused the StreamingChannel subscription (token expired, wrong scope, ...)"""
 
@@ -150,10 +155,12 @@ class CosmosNaming:
         return identifier(template.get_full_name()).upper() if self.layout == "fprime" else None
 
     def dedicated_item(self, template) -> str:
-        """Item-name root (upper-cased) of the channel value inside its dedicated packet"""
-        if self.layout == "fprime":
-            return identifier(template.get_name()).upper()
-        return self.channel_key(template.get_full_name())
+        """Item-name root (upper-cased) of the channel value inside its dedicated packet
+
+        Both generators build the per-channel packet with an ``emit_channel`` whose value items start at the channel
+        leaf name (``COMMANDSDISPATCHED``); the full dotted name is used only inside packet-set packets.
+        """
+        return identifier(template.get_name()).upper()
 
 
 class CosmosApi:
@@ -200,7 +207,7 @@ class CosmosApi:
                 )
             )
         except requests.RequestException as error:
-            raise CosmosTransportError(f"Cannot reach COSMOS at {redact_url(self.url)}: {error}") from error
+            raise CosmosUnreachableError(f"Cannot reach COSMOS at {redact_url(self.url)}: {error}") from error
         self.token = response.text.strip()
         if not self.token:
             raise CosmosTransportError(f"COSMOS at {redact_url(self.url)} rejected the password")
@@ -210,11 +217,11 @@ class CosmosApi:
     def call(self, method: str, *params: Any, **keyword_params: Any) -> Any:
         """One JSON-RPC call against /openc3-api/api; returns the result or raises CosmosTransportError
 
-        A 401/403 (session token invalidated, e.g. COSMOS restarted) re-authenticates once and retries.
+        A 401 (session token invalidated, e.g. COSMOS restarted) re-authenticates once and retries.
         """
         with self._lock:
             response = self._post(method, params, keyword_params)
-            if response.status_code in (401, 403) and self.password:
+            if response.status_code == 401 and self.password:  # 403 is a role problem a new login cannot cure
                 LOGGER.info("COSMOS session token rejected (%s); re-authenticating", response.status_code)
                 self._authenticate()
                 response = self._post(method, params, keyword_params)
@@ -233,7 +240,7 @@ class CosmosApi:
                 allow_redirects=False,
             )
         except requests.RequestException as error:
-            raise CosmosTransportError(f"Cannot reach COSMOS at {redact_url(self.url)}: {error}") from error
+            raise CosmosUnreachableError(f"Cannot reach COSMOS at {redact_url(self.url)}: {error}") from error
 
     @staticmethod
     def _result(method: str, response: requests.Response) -> Any:
@@ -257,9 +264,8 @@ class CosmosApi:
     def _check(response: requests.Response) -> requests.Response:
         """Accept 2xx only: a redirect would replay the password elsewhere, so it is a failure too"""
         if response.status_code >= 300:
-            raise CosmosTransportError(
-                f"{response.request.method} {redact_url(response.url)} failed ({response.status_code})"
-            )
+            error = CosmosUnreachableError if response.status_code >= 500 else CosmosTransportError
+            raise error(f"{response.request.method} {redact_url(response.url)} failed ({response.status_code})")
         return response
 
     def cable_url(self) -> str:
@@ -331,9 +337,10 @@ class StreamingSocket:
     def _refresh_token(self):
         try:
             self._set_token(self.token_provider())
-        except (
-            CosmosTransportError
-        ) as error:  # counts toward MAX_AUTH_FAILURES so a bad password is not re-sent forever
+        except CosmosUnreachableError:
+            raise  # transient: retried with backoff, not charged to the credential budget
+        except CosmosTransportError as error:
+            # counts toward MAX_AUTH_FAILURES so a bad password is not re-sent forever
             raise SubscriptionRejectedError(f"COSMOS re-authentication failed: {error}") from None
 
     def _connect(self):
@@ -341,13 +348,18 @@ class StreamingSocket:
 
         if self.token is None:
             self._refresh_token()
-        socket = websocket.create_connection(
-            self.cable_url,
-            header=[f"Sec-WebSocket-Protocol: {CABLE_PROTOCOLS}"],
-            timeout=CONNECT_TIMEOUT_SECONDS,
-            suppress_origin=True,
-            redirect_limit=0,  # a redirect would carry the session token elsewhere
-        )
+        try:
+            socket = websocket.create_connection(
+                self.cable_url,
+                header=[f"Sec-WebSocket-Protocol: {CABLE_PROTOCOLS}"],
+                timeout=CONNECT_TIMEOUT_SECONDS,
+                suppress_origin=True,
+                redirect_limit=0,  # a redirect would carry the session token elsewhere
+            )
+        except (OSError, websocket.WebSocketException) as error:
+            raise CosmosUnreachableError(
+                f"Cannot open the COSMOS stream at {redact_url(self.cable_url)}: {error}"
+            ) from error
         self._socket = socket
         status = socket.getstatus() if callable(getattr(socket, "getstatus", None)) else 101
         if status != 101:
@@ -374,7 +386,8 @@ class StreamingSocket:
                         "COSMOS rejected the streaming subscription (authentication or scope?)"
                     )
                 if kind == "disconnect":
-                    raise CosmosTransportError(f"COSMOS closed the stream: {frame.get('reason')}")
+                    error = SubscriptionRejectedError if frame.get("reconnect") is False else CosmosTransportError
+                    raise error(f"COSMOS closed the stream: {frame.get('reason')}")
             else:
                 if self._stop.is_set():
                     raise CosmosTransportError("stopped during the streaming subscription")  # pragma: no cover
@@ -404,7 +417,8 @@ class StreamingSocket:
             return None
         return frame if isinstance(frame, dict) else None
 
-    def _deliver(self, frame: dict):
+    def _deliver(self, frame: dict) -> bool:
+        """Handle one ActionCable frame; True when it carried telemetry packets (proof the subscription works)"""
         kind = frame.get("type")
         if kind == "disconnect":
             error = SubscriptionRejectedError if frame.get("reconnect") is False else CosmosTransportError
@@ -414,8 +428,12 @@ class StreamingSocket:
         message = frame.get("message")
         if isinstance(message, dict) and "error" in message:
             raise SubscriptionRejectedError(f"COSMOS refused the streaming request: {message['error']}")
+        if isinstance(message, dict) and message.get("__openc3_cable__") == "resubscribe":
+            raise CosmosTransportError("COSMOS asked the stream to resubscribe")
+        if message == []:
+            raise CosmosTransportError("COSMOS ended the stream (complete marker)")
         if not isinstance(message, list):
-            return
+            return False
         for packet in message:
             try:
                 self.callback(packet)
@@ -424,6 +442,7 @@ class StreamingSocket:
                 if name not in self._dropped:
                     self._dropped.add(name)
                     LOGGER.warning("Dropped COSMOS packet %s (further drops of it are silent): %s", name, exc)
+        return True
 
     def _run(self):
         delay = RECONNECT_DELAY_SECONDS
@@ -442,8 +461,7 @@ class StreamingSocket:
                     frame = self._read_frame(socket)
                     if frame is not None:
                         last_frame = time.monotonic()
-                        self._deliver(frame)
-                        if frame.get("type") != "ping":  # a delivered packet proves the subscription works
+                        if self._deliver(frame):  # a delivered packet proves the subscription works
                             delay = RECONNECT_DELAY_SECONDS
                             auth_failures = 0
                     elif time.monotonic() - last_frame > STREAM_IDLE_TIMEOUT_SECONDS:
@@ -746,10 +764,10 @@ class CosmosTransport(TransportClient):
                     self._failed_channels.add(key)
                     LOGGER.warning("COSMOS packet %s carries unknown F Prime channel id %s", packet_name, channel_id)
                 return []
-            return [(template, self.naming.dedicated_item(template))]
+            return [(template, self._dedicated_root(template, items))]
         dedicated = self._packet_channels.get(packet_name.upper()) if packet_name else None
         if dedicated is not None:
-            return [(dedicated, self.naming.dedicated_item(dedicated))]
+            return [(dedicated, self._dedicated_root(dedicated, items))]
         found: dict[str, Any] = {}
         for item_name in items:
             if item_name.startswith("__") or item_name in NON_VALUE_ITEMS:
@@ -758,6 +776,16 @@ class CosmosTransport(TransportClient):
             if key is not None:
                 found[key] = self._channel_index[key]
         return [(template, key) for key, template in found.items()]
+
+    def _dedicated_root(self, template, items: dict[str, Any]) -> str:
+        """Leaf-name root of a dedicated packet, or the full dotted key when a generator spells that instead"""
+        root = self.naming.dedicated_item(template)
+        if any(name == root or name.startswith((f"{root}.", f"{root}[", f"{root}_")) for name in items):
+            return root
+        dotted = self.naming.channel_key(template.get_full_name())
+        return (
+            dotted if any(name == dotted or name.startswith((f"{dotted}.", f"{dotted}[")) for name in items) else root
+        )
 
     def _channel_root(self, item_name: str) -> str | None:
         """Channel key whose flattened items (``KEY``, ``KEY_LENGTH``, ``KEY.MEMBER``, ``KEY[i]``) include this item"""
@@ -810,7 +838,7 @@ class CosmosTransport(TransportClient):
                 LOGGER.debug("No usable F Prime time in packet (%s); using the receive time", exc)
             else:
                 try:
-                    time_base = TimeType.TimeBase(str(base)) if isinstance(base, str) else int(base)
+                    time_base = coerce_scalar(base, TimeType.TimeBase) if isinstance(base, str) else int(base)
                     return TimeType(time_base=time_base, time_context=context, seconds=seconds, useconds=useconds)
                 except Exception as exc:
                     key = f"time base {base!r}"
@@ -918,6 +946,8 @@ def coerce_scalar(value: Any, type_class: type) -> Any:
 
     Raises ValueError when the value does not fit the type.
     """
+    if isinstance(value, dict) and value.get("json_class") == "Float":  # COSMOS's form for NaN / +-Infinity
+        value = float(value.get("raw"))
     if issubclass(type_class, BoolType):
         if isinstance(value, str):
             word = value.strip().upper()
@@ -929,9 +959,10 @@ def coerce_scalar(value: Any, type_class: type) -> Any:
         return bool(value)
     if issubclass(type_class, EnumType):
         if isinstance(value, str):
-            if value not in type_class.ENUM_DICT:
+            by_upper = {label.upper(): label for label in type_class.ENUM_DICT}  # COSMOS reports states upper-cased
+            if value.upper() not in by_upper:
                 raise ValueError(f"{value!r} is not a {type_class.__name__} label")
-            return value
+            return by_upper[value.upper()]
         number = int(value)
         for label, number_of_label in type_class.ENUM_DICT.items():
             if number_of_label == number:
