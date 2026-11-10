@@ -186,7 +186,8 @@ to `NAME.MEMBER`, non-numeric arrays to `NAME[i]`, booleans and enums as state n
 generated `FPRIME_EVENTS` packet (the opaque F Prime event record, decoded by the fprime-gds event decoder, so event
 assertions see native events). No event is delivered when the COSMOS target has no `FPRIME_EVENTS` packet — a plugin
 installed from an earlier `fprime-cosmos` (regenerate and reinstall it: run the launcher or `fprime-to-cosmos --install`),
-a dictionary without `FW_PACKET_LOG`, or `--cosmos-layout cfs` (the cFS generator has no events packet yet):
+a dictionary without `FW_PACKET_LOG`, or `--cosmos-layout cfs` with a target from a cFS generator older than its
+`FPRIME_EVENTS` packet (regenerate the gem):
 `connect()` still succeeds, the transport logs a warning and event assertions time out. An event record the
 fprime-gds event decoder cannot decode (for example an event id the loaded dictionary does not define) is dropped:
 each failure cause is warned about once as it happens (at most 16 causes; further causes are counted together), and
