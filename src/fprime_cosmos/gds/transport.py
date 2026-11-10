@@ -753,7 +753,8 @@ class CosmosTransport(TransportClient):
                 }
             except DictionaryError as error:
                 raise CosmosTransportError(f"Dictionary name not usable in COSMOS: {error}") from error
-            wanted = set(self._packet_channels) | packet_names | {EVENTS_PACKET}
+            dictionary_names = set(self._packet_channels) | packet_names
+            wanted = dictionary_names | {EVENTS_PACKET}
             if EVENTS_PACKET not in {name.upper() for name in names}:
                 LOGGER.info("COSMOS target %s has no %s packet; events are not delivered", self.target, EVENTS_PACKET)
             unmatched = [name for name in names if name.upper() not in wanted | skipped]
@@ -765,7 +766,7 @@ class CosmosTransport(TransportClient):
                     self.target,
                     ", ".join(sorted(unmatched)[:10]) + (", ..." if len(unmatched) > 10 else ""),
                 )
-            if not names:
+            if not any(name.upper() in dictionary_names for name in names):
                 raise CosmosTransportError(
                     f"None of the COSMOS packets of target {self.target!r} matches a dictionary channel or packet; "
                     "was the plugin generated from this dictionary?"

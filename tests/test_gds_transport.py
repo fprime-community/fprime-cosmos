@@ -646,6 +646,30 @@ class TestStreamDecoding:
         assert (events[0].get_time().seconds, events[0].get_time().useconds) == (1234, 5678)
         assert client.channel_decoder.send_to_all.call_count == 0  # an event packet never becomes a channel
 
+    def test_event_arguments_and_time_base_survive_the_record(self, dictionaries):
+        from fprime_gds.common.decoders.event_decoder import EventDecoder
+        from fprime_gds.common.models.serialize.numerical_types import U32Type
+
+        template = dictionaries.event_name["CdhCore.cmdDisp.OpCodeRegistered"]  # U32, I32, I32 arguments
+        decoder = EventDecoder(dictionaries.event_id)
+        decoder.send_to_all = MagicMock()
+        client = CosmosTransport(cosmos_url="http://c", cosmos_target="FPRIME")
+        client.set_pipeline_references(dictionaries, MagicMock(), decoder)
+        client._index_channels()
+        time_obj = TimeType(time_base=TimeType.TimeBase("TB_PROC_TIME"), seconds=1234, useconds=5678)
+        record = U32Type(template.get_id()).serialize() + time_obj.serialize()
+        for value, (_name, _desc, arg_type) in zip((0x500, 3, -1), template.get_args(), strict=True):
+            record += arg_type(value).serialize()
+        packet = {"__time": STREAM_TIME, "__type": "PACKET", "__packet": "DECOM__TLM__FPRIME__FPRIME_EVENTS__CONVERTED"}
+        packet.update(COSMOS_DERIVED)
+        packet.update({"FPRIME_DESCRIPTOR": 2, "RECORD": {"json_class": "String", "raw": list(record)}})
+        client._on_packet(packet)
+        (event,) = [call.args[0] for call in decoder.send_to_all.call_args_list]
+        assert event.template is template
+        assert [arg.val for arg in event.get_args()] == [0x500, 3, -1]
+        assert event.get_time().timeBase.val == "TB_PROC_TIME"
+        assert (event.get_time().seconds, event.get_time().useconds) == (1234, 5678)
+
     def test_undecodable_event_records_warn_once(self, dictionaries, caplog):
         from fprime_gds.common.decoders.event_decoder import EventDecoder
 
@@ -1729,7 +1753,7 @@ class TestConnectLifecycle:
     def test_no_matching_packet_fails_to_connect(self, client, monkeypatch):
         monkeypatch.setenv(PASSWORD_ENV, "pw")
         fake_api = MagicMock()
-        fake_api.call.return_value = ["OTHER_A", "FPRIME_CHANNELS", "FPRIME_UNKNOWN"]
+        fake_api.call.return_value = ["OTHER_A", "FPRIME_CHANNELS", "FPRIME_EVENTS", "FPRIME_UNKNOWN"]
         with (
             patch.object(transport, "CosmosApi", return_value=fake_api),
             patch.object(transport, "StreamingSocket") as stream_cls,
