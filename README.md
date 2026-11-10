@@ -5,11 +5,14 @@ Runs an [F Prime](https://github.com/nasa/fprime) deployment against [OpenC3 COS
 `fprime-cosmos` reads the F Prime JSON topology dictionary, generates a native COSMOS plugin (commands,
 channelized telemetry and packetized telemetry), installs it into a running COSMOS through the plugin API,
 and starts `fprime-comm-bridge` (from `fprime-gds`) to move packets between the flight software and COSMOS.
-No Ruby toolchain, no hand-edited plugin files and no knowledge of COSMOS internals are required.
+No Ruby toolchain, no hand-edited plugin files and no knowledge of COSMOS internals are required. It also ships the
+`cosmos` fprime-gds data transport, so the GDS Integration Test API can run against the deployment through COSMOS
+(see [COSMOS as the GDS data transport](#cosmos-as-the-gds-data-transport-integration-tests-through-cosmos)).
 
 ```text
-F Prime deployment  <-- framing / transport -->  fprime-comm-bridge  <-- UDP, F Prime packets -->  COSMOS
-                                                 (owns framing)                                    (this plugin)
+F Prime deployment  <-- framing / transport -->  fprime-comm-bridge  <-- UDP, F Prime packets -->  COSMOS  <-- cmd-tlm-api -->  fprime-gds pipeline
+                                                 (owns framing)                                    (this plugin)                 (`cosmos` data transport,
+                                                                                                                                  e.g. the integration test API)
 ```
 
 ## Installation
@@ -135,11 +138,16 @@ serves upgrades that plugin in place (COSMOS forbids two plugins defining the sa
 
 `fprime-cosmos` also ships a [fprime-gds `data-transport` plugin](https://github.com/nasa/fprime-gds/pull/386) named
 `cosmos`, so the GDS Integration Test API (and any other `fprime-gds` pipeline user) can talk to the deployment
-*through COSMOS* instead of the GDS comm layer: commands go to the COSMOS cmd-tlm-api (JSON-RPC
-`cmd_no_hazardous_check`), telemetry comes back from the COSMOS streaming websocket (`/openc3-api/cable`, DECOM
-CONVERTED values) and is rebuilt into GDS channel data with the F Prime time carried by the `FPRIME_TIME_*` items.
+*through COSMOS* instead of the GDS comm layer. Commands go to the COSMOS cmd-tlm-api as structured JSON-RPC
+`cmd_no_hazardous_check` calls (target, command name, `{PARAMETER: value}`; the hazardous-command confirmation is
+bypassed because nobody is there to confirm it). Telemetry comes back from the COSMOS streaming websocket
+(`/openc3-api/cable`, DECOM CONVERTED values): a packet carrying `FPRIME_CHANNEL_ID` is resolved by channel id,
+any other packet by the channel names its items spell, and the value is reassembled from the items the generator
+flattened (primitives, enums, booleans, strings, arrays and structs) with the F Prime time carried by the
+`FPRIME_TIME_*` items (COSMOS receive time when a packet has none).
 
 ```bash
+# COSMOS up and `fprime-cosmos` running (plugin installed, bridge + deployment started, see Quick start)
 export OPENC3_API_PASSWORD=...        # password only from the environment; never on the command line
 pytest test/int --dictionary <dictionary>.json \
     --data-transport-selection cosmos --cosmos-url http://localhost:2900 --cosmos-target FPRIME
@@ -148,15 +156,18 @@ pytest test/int --dictionary <dictionary>.json \
 | Argument | Meaning |
 | --- | --- |
 | `--data-transport-selection cosmos` | select the COSMOS transport (default is the GDS ZeroMQ transport) |
-| `--cosmos-url` | cmd-tlm-api URL, `http://localhost:2900` by default; `https://` is honored |
+| `--cosmos-url` | cmd-tlm-api URL, `http://localhost:2900` by default; `https://` is honored (and recommended for a remote COSMOS: over plain `http://` the password and session token travel in clear text, which the transport warns about) |
 | `--cosmos-scope` | COSMOS scope, `DEFAULT` |
-| `--cosmos-target` | COSMOS target of the deployment, `FPRIME` (the name this generator emits) |
-| `--cosmos-layout` | `fprime` (this generator: per-channel packets named after the channel) or `cfs` (one-app-one-target cFS generator: upper-cased dotted item names, e.g. `CFSCORE.CMDDISP.COMMANDSDISPATCHED` in `HEALTH`) |
+| `--cosmos-target` | COSMOS target of the deployment, `FPRIME` (the name this generator emits; with `--cosmos-layout cfs` pass the target name given to the cFS generator, e.g. `FPRIME_APP`) |
+| `--cosmos-layout` | `fprime` (this generator: per-channel packets named after the channel, subscribed selectively) or `cfs` (*experimental*: one-app-one-target cFS generator, upper-cased dotted item names such as `CFSCORE.CMDDISP.COMMANDSDISPATCHED` in `HEALTH`, every packet of the target subscribed; unit-tested against that generator's documented naming only) |
 
-Requires `fprime-gds` with the `data-transport` plugin category (>= 4.5); on older releases the entry point is
-ignored. Events, files and data products are not yet modeled in COSMOS, so event assertions do not pass through this
-transport until the generator emits an events packet. The password is never placed in URLs, logs or the GDS
-connection URI.
+Requires an `fprime-gds` with the `data-transport` plugin category ([nasa/fprime-gds#386](https://github.com/nasa/fprime-gds/pull/386),
+not in a release at the time of writing: install that branch, or the first release that includes it). On older
+releases the entry point is loaded and ignored (the transport logs a warning) and `--data-transport-selection` does not
+exist. Events, files and data products are not yet modeled in COSMOS and the transport maps telemetry channels only, so
+event assertions do not pass through this transport until both the generator emits an events packet and the transport
+decodes it. A COSMOS command rejection is raised to the caller (the test fails), a target without telemetry packets
+fails `connect()`. The password is never placed in URLs, logs, exception messages or the GDS connection URI.
 
 ### Generating the plugin on its own
 
