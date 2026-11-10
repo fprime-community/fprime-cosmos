@@ -23,7 +23,7 @@ import threading
 import time
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
 import requests
 from fprime_gds.common.data_types.ch_data import ChData
@@ -109,12 +109,10 @@ class SubscriptionRejectedError(CosmosTransportError):
 
 def redact_url(url: str) -> str:
     """Drop user:password from a URL before it is logged or placed in an exception message"""
-    if "://" not in url:
-        return url.rsplit("@", 1)[-1]
-    parts = urlsplit(url)
-    if "@" not in parts.netloc:
+    if "@" not in url:
         return url
-    return urlunsplit(parts._replace(netloc=parts.netloc.rsplit("@", 1)[-1]))
+    scheme, separator, rest = url.partition("://") if "://" in url else ("", "", url)
+    return f"{scheme}{separator}***@{rest.rsplit('@', 1)[-1]}"  # RFC 3986 userinfo may hide '/', '?' or '#'
 
 
 class CosmosNaming:
@@ -232,6 +230,7 @@ class CosmosApi:
                 data=json.dumps(body),
                 headers={"Content-Type": "application/json-rpc"},
                 timeout=self.timeout,
+                allow_redirects=False,
             )
         except requests.RequestException as error:
             raise CosmosTransportError(f"Cannot reach COSMOS at {redact_url(self.url)}: {error}") from error
@@ -244,7 +243,9 @@ class CosmosApi:
             payload = {}
         if not isinstance(payload, dict):
             payload = {"error": {"message": f"unexpected JSON-RPC reply {type(payload).__name__}"}}
-        if response.status_code >= 400 or "error" in payload:
+        elif "result" not in payload and "error" not in payload:
+            payload = {"error": {"message": f"not a JSON-RPC reply: {response.text[:200]!r}"}}
+        if response.status_code >= 300 or "error" in payload:
             error = payload.get("error")
             data = error.get("data") if isinstance(error, dict) else None
             message = data.get("message") if isinstance(data, dict) else (data if isinstance(data, str) else None)
@@ -328,7 +329,12 @@ class StreamingSocket:
         self.identifier = json.dumps({"channel": STREAMING_CHANNEL, "token": token})
 
     def _refresh_token(self):
-        self._set_token(self.token_provider())
+        try:
+            self._set_token(self.token_provider())
+        except (
+            CosmosTransportError
+        ) as error:  # counts toward MAX_AUTH_FAILURES so a bad password is not re-sent forever
+            raise SubscriptionRejectedError(f"COSMOS re-authentication failed: {error}") from None
 
     def _connect(self):
         import websocket  # websocket-client; imported here to keep it out of every GDS process's import path
@@ -340,14 +346,24 @@ class StreamingSocket:
             header=[f"Sec-WebSocket-Protocol: {CABLE_PROTOCOLS}"],
             timeout=CONNECT_TIMEOUT_SECONDS,
             suppress_origin=True,
+            redirect_limit=0,  # a redirect would carry the session token elsewhere
         )
-        socket.settimeout(SOCKET_READ_TIMEOUT_SECONDS)
-        self._socket = socket  # visible to stop() while the handshake is in progress
+        self._socket = socket
+        status = socket.getstatus() if callable(getattr(socket, "getstatus", None)) else 101
+        if status != 101:
+            self._close_socket()
+            raise CosmosTransportError(f"COSMOS stream handshake answered {status} instead of 101")
+        socket.settimeout(SOCKET_READ_TIMEOUT_SECONDS)  # visible to stop() while the handshake is in progress
         try:
             socket.send(json.dumps({"command": "subscribe", "identifier": self.identifier}))
             deadline = time.monotonic() + SUBSCRIBE_TIMEOUT_SECONDS
             while time.monotonic() < deadline and not self._stop.is_set():
-                frame = self._read_frame(socket)
+                try:
+                    frame = self._read_frame(socket)
+                except CosmosTransportError:
+                    if self._stop.is_set():
+                        raise CosmosTransportError("stopped during the streaming subscription") from None
+                    raise
                 if frame is None:
                     continue
                 kind = frame.get("type")
@@ -361,7 +377,7 @@ class StreamingSocket:
                     raise CosmosTransportError(f"COSMOS closed the stream: {frame.get('reason')}")
             else:
                 if self._stop.is_set():
-                    raise CosmosTransportError("stopped during the streaming subscription")
+                    raise CosmosTransportError("stopped during the streaming subscription")  # pragma: no cover
                 raise CosmosTransportError("COSMOS did not confirm the streaming subscription")
             data = {"action": "add", "packets": self.packets, "scope": self.scope, "token": self.token}
             socket.send(json.dumps({"command": "message", "identifier": self.identifier, "data": json.dumps(data)}))
@@ -378,6 +394,8 @@ class StreamingSocket:
             raw = socket.recv()
         except websocket.WebSocketTimeoutException:
             return None
+        except websocket.WebSocketConnectionClosedException:
+            raise CosmosTransportError("COSMOS stream connection closed") from None
         if not raw:
             return None
         try:
@@ -389,10 +407,13 @@ class StreamingSocket:
     def _deliver(self, frame: dict):
         kind = frame.get("type")
         if kind == "disconnect":
-            raise CosmosTransportError(f"COSMOS closed the stream: {frame.get('reason')}")
+            error = SubscriptionRejectedError if frame.get("reconnect") is False else CosmosTransportError
+            raise error(f"COSMOS closed the stream: {frame.get('reason')}")
         if kind == "reject_subscription":
             raise SubscriptionRejectedError("COSMOS rejected the streaming subscription after it was confirmed")
         message = frame.get("message")
+        if isinstance(message, dict) and "error" in message:
+            raise SubscriptionRejectedError(f"COSMOS refused the streaming request: {message['error']}")
         if not isinstance(message, list):
             return
         for packet in message:
@@ -416,14 +437,15 @@ class StreamingSocket:
                         self._close_socket()
                         return
                     LOGGER.info("COSMOS stream re-subscribed to %d packet(s)", len(self.packets))
-                delay = RECONNECT_DELAY_SECONDS
-                auth_failures = 0
                 last_frame = time.monotonic()
                 while not self._stop.is_set():
                     frame = self._read_frame(socket)
                     if frame is not None:
                         last_frame = time.monotonic()
                         self._deliver(frame)
+                        if frame.get("type") != "ping":  # a delivered packet proves the subscription works
+                            delay = RECONNECT_DELAY_SECONDS
+                            auth_failures = 0
                     elif time.monotonic() - last_frame > STREAM_IDLE_TIMEOUT_SECONDS:
                         raise CosmosTransportError(
                             f"COSMOS stream silent for {STREAM_IDLE_TIMEOUT_SECONDS:.0f}s (no ping); reconnecting"
@@ -522,7 +544,7 @@ class CosmosTransport(TransportClient):
     def _check_url(cosmos_url: str):
         if "://" in cosmos_url and not cosmos_url.startswith(("http://", "https://")):
             raise ValueError(f"--cosmos-url must be an http:// or https:// URL, got: {redact_url(cosmos_url)}")
-        if "@" in urlsplit(cosmos_url if "://" in cosmos_url else "http://" + cosmos_url).netloc:
+        if "@" in cosmos_url:  # anywhere: an unencoded password may contain '/', '?' or '#' and escape the netloc
             raise ValueError(f"--cosmos-url must not carry credentials; set {PASSWORD_ENV} instead")
 
     @classmethod
@@ -571,6 +593,8 @@ class CosmosTransport(TransportClient):
         self.api = CosmosApi(url, self.scope, os.environ.get(PASSWORD_ENV))
         try:
             self._require_websocket_client()
+            if self.dictionaries is None:
+                raise CosmosTransportError("set_pipeline_references() must be called before connect()")
             self.api.authenticate()
             self._index_channels()
             packets = self._subscription_packets()
@@ -596,7 +620,10 @@ class CosmosTransport(TransportClient):
 
     @staticmethod
     def _require_websocket_client():
-        """Fail connect() loudly when websocket-client is missing or shadowed instead of looping in the stream thread"""
+        """Fail connect() clearly when websocket-client is missing or shadowed by another ``websocket`` module
+
+        Without it the stream would fail anyway, but with an AttributeError or a bare ImportError.
+        """
         try:
             import websocket
         except ImportError as error:
@@ -627,6 +654,8 @@ class CosmosTransport(TransportClient):
 
     def data_callback(self, data, sender=None):
         if isinstance(data, CmdData):
+            if self.stream is not None and self.stream.failure is not None:
+                raise CosmosTransportError(f"COSMOS telemetry stream gave up: {self.stream.failure}")
             self._issue_command(data)
             self._pending_commands += 1
             return
@@ -697,7 +726,7 @@ class CosmosTransport(TransportClient):
                     "%d COSMOS packet(s) of target %s are not in the dictionary and are not subscribed: %s",
                     len(unmatched),
                     self.target,
-                    ", ".join(sorted(unmatched)[:10]),
+                    ", ".join(sorted(unmatched)[:10]) + (", ..." if len(unmatched) > 10 else ""),
                 )
             if not names:
                 raise CosmosTransportError(

@@ -162,7 +162,7 @@ pytest test/int --dictionary <dictionary>.json \
 | `--data-transport-selection cosmos` | select the COSMOS transport (default is the GDS ZeroMQ transport) |
 | `--cosmos-url` | cmd-tlm-api URL, `http://localhost:2900` by default; `https://` is honored (and recommended for a remote COSMOS: over plain `http://` the password and session token travel in clear text, which the transport warns about for non-loopback hosts) |
 | `--cosmos-scope` | COSMOS scope, `DEFAULT` |
-| `--cosmos-target` | COSMOS target of the deployment: the launcher's/generator's `--target-name` (default `FPRIME` in both); with `--cosmos-layout cfs` the target name given to the cFS generator, e.g. `FPRIME_APP` |
+| `--cosmos-target` | COSMOS target of the deployment: the launcher's/generator's `--target-name` (default `FPRIME` in both) or the `fprime_target_name` plugin variable when it was overridden; with `--cosmos-layout cfs` the target name given to the cFS generator, e.g. `FPRIME_APP` |
 | `--cosmos-layout` | `fprime` (this generator: per-channel packets named after the channel, subscribed selectively) or `cfs` (*experimental*: one-app-one-target cFS generator, upper-cased dotted item names such as `CFSCORE.CMDDISP.COMMANDSDISPATCHED` in `HEALTH`, every packet of the target subscribed; unit-tested against that generator's documented naming only) |
 
 Requires an `fprime-gds` with the `data_transport` plugin category (`--data-transport-selection`;
@@ -170,20 +170,25 @@ Requires an `fprime-gds` with the `data_transport` plugin category (`--data-tran
 writing):
 
 ```bash
-pip install "fprime-gds @ git+https://github.com/nasa/fprime-gds.git@refs/pull/386/head"   # until a release contains #386
+# nasa/fprime-gds#386 at the commit this transport was tested against; replace with a release once one contains #386
+pip install "fprime-gds @ git+https://github.com/nasa/fprime-gds.git@d190fcb6d928a099d4f67e62ba5479b5e3073ad6"
 ```
 
 On an fprime-gds without the category the entry point is loaded and ignored and `--data-transport-selection` does not
 exist. The transport is tested against COSMOS 7.5.1 (JSON-RPC `cmd_no_hazardous_check` with structured parameters,
-`/openc3-api/auth/verify` session tokens, the ActionCable `StreamingChannel` frame shape); earlier 6.10+/7.x releases
-are expected to work but are not exercised. Command arguments are flattened like the generator's parameters (structs
+`/openc3-api/auth/verify` session tokens, the ActionCable `StreamingChannel` frame shape) and needs COSMOS 7.2.0 or
+newer (password-based `/openc3-api/auth/verify` and token authentication of the `StreamingChannel` subscription;
+6.10.x-7.1.x authenticate differently and are not supported by the transport, although the generated plugin itself
+installs there). Command arguments are flattened like the generator's parameters (structs
 to `NAME.MEMBER`, non-numeric arrays to `NAME[i]`, booleans and enums as state names). Events, files and data products
 are not yet modeled in COSMOS and the transport maps telemetry channels only, so event assertions do not pass through
 this transport until both the generator emits an events packet and the transport decodes it. A COSMOS command
 rejection is raised to the caller (the test fails); a target without telemetry packets fails `connect()`; after three
-consecutive subscription rejections the stream gives up with an error instead of re-sending the password forever. The
+consecutive subscription rejections (before or after COSMOS confirmed the subscription, or a non-reconnectable
+disconnect) without a delivered packet in between, the stream gives up with an error instead of re-sending the
+password forever, and the next command raises that error. The
 password is never placed in URLs, logs, exception messages or the GDS connection URI, and the authentication requests
-do not follow redirects.
+do not follow redirects (nor do the JSON-RPC calls or the websocket handshake).
 
 ### Generating the plugin on its own
 

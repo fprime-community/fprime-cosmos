@@ -175,7 +175,17 @@ class TestPluginContract:
             CosmosTransport.check_arguments(**kwargs)
         assert "pw" not in str(info.value)
 
-    @pytest.mark.parametrize("url", [f"ftp://user:{SECRET}@host", f"http://user:{SECRET}@host", f"user:{SECRET}@host"])
+    @pytest.mark.parametrize(
+        "url",
+        [
+            f"ftp://user:{SECRET}@host",
+            f"http://user:{SECRET}@host",
+            f"user:{SECRET}@host",
+            f"http://admin:pa/{SECRET}@host:2900",  # '/' in the password ends the RFC 3986 authority before the '@'
+            f"http://admin:pa?{SECRET}@host",
+            f"https://admin:{SECRET}#x@host",
+        ],
+    )
     def test_credentials_in_the_url_are_rejected_without_being_echoed(self, url):
         for check in (CosmosTransport.check_arguments, CosmosTransport.get_connection_uri):
             with pytest.raises(ValueError) as info:
@@ -189,8 +199,9 @@ class TestPluginContract:
         assert "s3cret" not in str(info.value)
 
     def test_redact_url(self):
-        assert redact_url("http://u:p@host:1/x") == "http://host:1/x"
-        assert redact_url("u:p@host") == "host"
+        assert redact_url("http://u:p@host:1/x") == "http://***@host:1/x"
+        assert redact_url("u:p@host") == "***@host"
+        assert redact_url("http://u:pa/ss?w#d@host:1/x") == "http://***@host:1/x"
         assert redact_url("http://host") == "http://host"
 
 
@@ -298,6 +309,21 @@ class TestCommands:
             "FPRIME_DESCRIPTOR", "FPRIME_OPCODE", "ARG.WORDS[0]_LENGTH", "ARG.WORDS[1]_LENGTH", "ARG.LABEL_LENGTH"
         }  # fmt: skip
 
+    def test_struct_argument_goes_through_issue_command_flattened(self, client):
+        from fprime_gds.common.models.serialize.serializable_type import SerializableType
+        from fprime_gds.common.templates.cmd_template import CmdTemplate
+
+        pair = SerializableType.construct_type(
+            "GdsTransportTestPair",
+            [("count", U8Type, "", ""), ("name", StringType.construct_type("GdsTransportTestS6", 6), "", "")],
+        )
+        template = CmdTemplate(0x77, "SET_PAIR", "Comp", [("pair", "", pair)])
+        client.api = MagicMock()
+        client.data_callback(CmdData(('{"count": 2, "name": "ab"}',), template))
+        client.api.call.assert_called_once_with(
+            "cmd_no_hazardous_check", "FPRIME", "Comp.SET_PAIR", {"PAIR.COUNT": 2, "PAIR.NAME": "ab"}
+        )
+
     def test_every_dictionary_command_matches_the_generated_parameters(self, client, dictionaries):
         layout = FprimeDictionary(REFERENCE_DICTIONARY).layout
         for template in dictionaries.command_name.values():
@@ -327,6 +353,24 @@ class TestCommands:
         ):
             client.data_callback(CmdData((), template))
         assert "CMD_NO_OP" in caplog.text and "boom" in caplog.text
+
+    def test_command_after_the_stream_gave_up_fails_loudly(self, client, dictionaries):
+        client.api = MagicMock()
+        client.stream = MagicMock(failure=CosmosTransportError("rejected 3 times"))
+        with pytest.raises(CosmosTransportError, match="stream gave up: rejected 3 times"):
+            client.data_callback(CmdData((), dictionaries.command_name["CdhCore.cmdDisp.CMD_NO_OP"]))
+        client.api.call.assert_not_called()
+
+    def test_connect_without_pipeline_references_fails_clearly(self, monkeypatch):
+        monkeypatch.setenv(PASSWORD_ENV, "pw")
+        client = CosmosTransport(cosmos_url="http://cosmos:2900")
+        with (
+            patch.object(transport, "CosmosApi") as api_cls,
+            pytest.raises(CosmosTransportError, match="set_pipeline_references"),
+        ):
+            client.connect()
+        api_cls.return_value.authenticate.assert_not_called()
+        assert client.api is None
 
     def test_command_before_connect_fails(self, client, dictionaries):
         with pytest.raises(CosmosTransportError, match="not connected"):
@@ -605,6 +649,7 @@ class TestApi:
         assert url == "http://cosmos:2900/openc3-api/auth/verify"
         assert set(kwargs) == {"data", "timeout", "allow_redirects"} and kwargs["data"] == {"password": SECRET}
         assert kwargs["allow_redirects"] is False
+        assert api.session.get.call_args.kwargs["allow_redirects"] is False
         assert SECRET not in api.cable_url() and SECRET not in api.url
 
     @pytest.mark.parametrize(
@@ -616,6 +661,9 @@ class TestApi:
             (FakeResponse(payload={"result": True}), requests.Timeout("slow"), "Cannot reach COSMOS"),
             (FakeResponse(payload={"result": True}), FakeResponse(status=401, text="nope"), r"failed \(401\)"),
             (FakeResponse(payload={"result": True}), FakeResponse(text=" \n"), "rejected the password"),
+            (FakeResponse(status=302, text=""), None, r"failed \(302\)"),
+            (FakeResponse(payload={"result": True}), FakeResponse(status=307, text=""), r"failed \(307\)"),
+            (FakeResponse(status=200, text="<html>login</html>"), None, "did not answer as a COSMOS"),
         ],
     )
     def test_authenticate_failures_are_reported_without_the_password(self, get, post, message):
@@ -634,6 +682,11 @@ class TestApi:
         [
             (FakeResponse(status=200, payload={"jsonrpc": "2.0", "error": {"message": "nope"}, "id": 1}), "nope"),
             (FakeResponse(status=400, text="bad request"), "bad request"),
+            (FakeResponse(status=500, payload={"error": {"message": "x", "data": "no such cmd"}}), "no such cmd"),
+            (FakeResponse(status=500, payload={"error": {"message": "x", "data": None}}), "x"),
+            (FakeResponse(status=200, payload=["unexpected"]), "unexpected JSON-RPC reply list"),
+            (FakeResponse(status=200, payload={}), "not a JSON-RPC reply"),
+            (FakeResponse(status=200, text="<html>login</html>"), "not a JSON-RPC reply"),
         ],
     )
     def test_call_raises_on_a_json_rpc_error_or_an_http_error_alone(self, response, message):
@@ -663,6 +716,14 @@ class TestApi:
         api.session.post.side_effect = [FakeResponse(status=401, text="expired"), FakeResponse(status=401, text="no")]
         with pytest.raises(CosmosTransportError, match=r"failed \(401\)"):
             api.call("get_cmd_cnt", "FPRIME", "X")
+
+    def test_call_does_not_follow_redirects(self):
+        api = CosmosApi("http://cosmos", "DEFAULT", "pw")
+        api.session = MagicMock()
+        api.session.post.return_value = FakeResponse(status=307, text="elsewhere")
+        with pytest.raises(CosmosTransportError, match=r"failed \(307\)"):
+            api.call("cmd_no_hazardous_check", "FPRIME", "X", {})
+        assert api.session.post.call_args.kwargs["allow_redirects"] is False
 
     def test_call_builds_json_rpc_and_surfaces_errors(self):
         api = CosmosApi("https://cosmos", "SCOPE1", "pw")
@@ -714,6 +775,9 @@ class FakeSocket:
 
     def settimeout(self, _seconds):
         pass
+
+    def getstatus(self):
+        return 101
 
 
 @pytest.fixture
@@ -826,6 +890,46 @@ class TestStreamingSocket:
                 stream.start()
             assert fake.closed.is_set() and stream._thread is None and "tok-a1b2" not in str(info.value)
 
+    def test_stop_during_a_pending_handshake_closes_the_socket_and_fails_start(self, stream_factory):
+        class BlockingSocket(FakeSocket):
+            def recv(self):
+                import websocket
+
+                if self.closed.wait(0.02):
+                    raise websocket.WebSocketConnectionClosedException()
+                raise websocket.WebSocketTimeoutException()
+
+        fake = BlockingSocket([])
+        fake.send = lambda text: fake.sent.append(json.loads(text))  # never confirms
+        stream = stream_factory("ws://c", lambda: "tok", "DEFAULT", [], lambda p: None)
+        outcome = []
+
+        def run():
+            try:
+                stream.start()
+            except CosmosTransportError as error:
+                outcome.append(str(error))
+
+        with patch("websocket.create_connection", return_value=fake):
+            thread = threading.Thread(target=run)
+            thread.start()
+            assert wait_for(lambda: len(fake.sent) == 1)
+            stream.stop()
+            thread.join(5)
+        assert outcome == ["stopped during the streaming subscription"] and fake.closed.is_set()
+        assert stream._thread is None
+
+    def test_redirected_handshake_is_refused(self, stream_factory):
+        fake = FakeSocket([])
+        fake.getstatus = lambda: 302
+        stream = stream_factory("ws://c", lambda: "tok-r3d", "DEFAULT", [], lambda p: None)
+        with (
+            patch("websocket.create_connection", return_value=fake) as create,
+            pytest.raises(CosmosTransportError, match="302"),
+        ):
+            stream.start()
+        assert create.call_args.kwargs["redirect_limit"] == 0 and fake.closed.is_set() and fake.sent == []
+
     def test_junk_frame_during_the_handshake_is_skipped(self, stream_factory):
         fake = FakeSocket([json.dumps({"identifier": "i", "message": [{"__packet": "P"}]})])
         original_send = fake.send
@@ -851,14 +955,18 @@ class TestStreamingSocket:
 
         tokens = iter(["tok-old-9f3", "tok-new-7c1"])
         stream = stream_factory("ws://c", lambda: next(tokens), "DEFAULT", [], lambda p: None)
+        delays = []
+        original_wait = stream._stop.wait
         with (
             patch("websocket.create_connection", side_effect=create),
             patch.object(transport, "RECONNECT_DELAY_SECONDS", 0.01),
+            patch.object(stream._stop, "wait", side_effect=lambda d: delays.append(d) or original_wait(d)),
             caplog.at_level(logging.WARNING, logger="cosmos_transport"),
         ):
             stream.start()
             assert wait_for(lambda: len(sockets) >= 3 and len(sockets[2].sent) == 2)
             stream.stop()
+        assert delays[:2] == [0.01, 0.02]  # exponential backoff between the two failed attempts
         assert (
             "closed the stream: server_restart" in caplog.text and "rejected the streaming subscription" in caplog.text
         )
@@ -885,6 +993,74 @@ class TestStreamingSocket:
             assert wait_for(lambda: len(sockets) >= 2 and len(sockets[1].sent) == 2)
             stream.stop()
         assert "after it was confirmed" in caplog.text and sockets[0].closed.is_set()
+
+    def test_error_frame_then_rejection_after_confirmation_counts_toward_give_up(self, stream_factory, caplog):
+        sockets = []
+
+        def create(*_args, **_kwargs):
+            sockets.append(
+                FakeSocket(
+                    [
+                        json.dumps({"identifier": "i", "message": {"error": "NoMethodError: scope is required"}}),
+                        json.dumps({"type": "reject_subscription"}),
+                    ]
+                )
+            )
+            return sockets[-1]
+
+        stream = stream_factory("ws://c", lambda: "tok", "DEFAULT", [], lambda p: None)
+        with (
+            patch("websocket.create_connection", side_effect=create),
+            patch.object(transport, "RECONNECT_DELAY_SECONDS", 0.01),
+            caplog.at_level(logging.WARNING, logger="cosmos_transport"),
+        ):
+            stream.start()
+            assert wait_for(lambda: stream.failure is not None)
+        assert len(sockets) == transport.MAX_AUTH_FAILURES
+        assert "scope is required" in caplog.text and "giving up on telemetry" in caplog.text
+
+    def test_non_reconnectable_disconnects_count_as_rejections(self, stream_factory, caplog):
+        sockets = []
+
+        def create(*_args, **_kwargs):
+            sockets.append(
+                FakeSocket([json.dumps({"type": "disconnect", "reason": "unauthorized", "reconnect": False})])
+            )
+            return sockets[-1]
+
+        stream = stream_factory("ws://c", lambda: "tok", "DEFAULT", [], lambda p: None)
+        with (
+            patch("websocket.create_connection", side_effect=create),
+            patch.object(transport, "RECONNECT_DELAY_SECONDS", 0.01),
+            caplog.at_level(logging.WARNING, logger="cosmos_transport"),
+        ):
+            stream.start()
+            assert wait_for(lambda: stream.failure is not None)
+        assert len(sockets) == transport.MAX_AUTH_FAILURES and "unauthorized" in caplog.text
+
+    def test_failed_reauthentication_counts_toward_give_up(self, stream_factory, caplog):
+        sockets = []
+        tokens = iter(["tok-first"])
+
+        def provide():
+            try:
+                return next(tokens)
+            except StopIteration:
+                raise CosmosTransportError("COSMOS rejected the password (401)") from None
+
+        def create(*_args, **_kwargs):
+            sockets.append(FakeSocket([json.dumps({"type": "reject_subscription"})]))
+            return sockets[-1]
+
+        stream = stream_factory("ws://c", provide, "DEFAULT", [], lambda p: None)
+        with (
+            patch("websocket.create_connection", side_effect=create),
+            patch.object(transport, "RECONNECT_DELAY_SECONDS", 0.01),
+            caplog.at_level(logging.WARNING, logger="cosmos_transport"),
+        ):
+            stream.start()
+            assert wait_for(lambda: stream.failure is not None)
+        assert len(sockets) == 1 and "re-authentication failed" in caplog.text and "giving up" in caplog.text
 
     def test_gives_up_after_repeated_rejections(self, stream_factory, caplog):
         sockets = []
