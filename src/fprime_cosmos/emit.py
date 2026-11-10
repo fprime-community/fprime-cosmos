@@ -297,7 +297,7 @@ def emit_packet(packet: PktTemplate, layout: WireLayout) -> list[str]:
 
 
 def emit_packets(dictionary: FprimeDictionary) -> str:
-    """Packetized telemetry followed by the catch-all (packets.txt sorts, and so loads, after channels.txt)"""
+    """Packetized telemetry, events packet, then the catch-all (packets.txt sorts, so loads, after channels.txt)"""
     blocks = [header(dictionary)]
     for packet in dictionary.packets:
         if full_name(packet).upper() in RESERVED_PACKETS:

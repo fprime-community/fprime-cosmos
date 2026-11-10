@@ -3,7 +3,7 @@
 Runs an [F Prime](https://github.com/nasa/fprime) deployment against [OpenC3 COSMOS](https://openc3.com).
 
 `fprime-cosmos` reads the F Prime JSON topology dictionary, generates a native COSMOS plugin (commands,
-channelized telemetry and packetized telemetry), installs it into a running COSMOS through the plugin API,
+channelized telemetry, packetized telemetry and the opaque event record), installs it into a running COSMOS through the plugin API,
 and starts `fprime-comm-bridge` (from `fprime-gds`) to move packets between the flight software and COSMOS.
 No Ruby toolchain, no hand-edited plugin files and no knowledge of COSMOS internals are required. It also ships the
 `cosmos` fprime-gds data transport, so the GDS Integration Test API can run against the deployment through COSMOS
@@ -84,7 +84,7 @@ machine. The default `--cosmos-url` is plain HTTP on `localhost`; use an `https:
    ```
 
 3. Open COSMOS: the `FPRIME` target appears with one command per F Prime command, one telemetry packet per
-   channel and one per telemetry packet-set entry.
+   channel, one per telemetry packet-set entry and `FPRIME_EVENTS`.
 
 ### Options
 
@@ -145,7 +145,7 @@ serves upgrades that plugin in place (COSMOS forbids two plugins defining the sa
 *through COSMOS* instead of the GDS comm layer. Commands go to the COSMOS cmd-tlm-api as structured JSON-RPC
 `cmd_no_hazardous_check` calls (target, command name, `{PARAMETER: value}`; the hazardous-command confirmation is
 bypassed because nobody is there to confirm it). Telemetry comes back from the COSMOS streaming websocket
-(`/openc3-api/cable`, DECOM CONVERTED values): a packet carrying `FPRIME_CHANNEL_ID` is resolved by channel id,
+(`/openc3-api/cable`, DECOM CONVERTED values): `FPRIME_EVENTS` goes to the event decoder (below); a packet carrying `FPRIME_CHANNEL_ID` is resolved by channel id,
 otherwise a packet named after a dictionary channel (this generator's dedicated packets) by its name, any other
 packet by the channel names its items spell, and the value is reassembled from the items the generator
 flattened (primitives, enums, booleans, strings, arrays and structs) with the F Prime time carried by the
@@ -220,9 +220,10 @@ channel and packet identifier types, `FwSizeStoreType` string lengths, boolean e
   dictionary. COSMOS stamps packets with the received time; rename `FPRIME_TIME` to `PACKET_TIME` in a copy of
   the plugin to stamp them with F Prime time instead (only meaningful for `TB_WORKSTATION_TIME`).
 - **Packetized telemetry** – one packet per entry of the selected `telemetryPacketSets` set.
+- `FPRIME_EVENTS` – the F Prime event record after its descriptor as one opaque `RECORD` block (decoded by the
+  `cosmos` data transport through fprime-gds; emitted only when the dictionary's packet-type enumeration defines
+  `FW_PACKET_LOG`).
 - `FPRIME_UNKNOWN` (last in `packets.txt`) catches packets the plugin does not model (files, data products).
-
-Events are carried by the `FPRIME_EVENTS` packet (opaque record, see the data transport above).
 
 ## Development
 

@@ -782,7 +782,12 @@ class CosmosTransport(TransportClient):
         if not isinstance(record, (list, bytes, bytearray)) or self.event_decoder is None:
             if "events" not in self._failed_channels:
                 self._failed_channels.add("events")
-                LOGGER.warning("COSMOS %s packet carries no usable %s block", EVENTS_PACKET, EVENT_RECORD_ITEM)
+                cause = (
+                    "no event decoder is attached"
+                    if self.event_decoder is None
+                    else f"no usable {EVENT_RECORD_ITEM} block"
+                )
+                LOGGER.warning("COSMOS %s packet dropped: %s", EVENTS_PACKET, cause)
             return
         try:
             self.event_decoder.data_callback(bytes(record))  # decode_api, then every registered consumer
