@@ -251,6 +251,8 @@ def emit_events_packet(layout: WireLayout) -> list[str]:
     Identified by the log descriptor; everything after it (event id, time, arguments) stays one BLOCK so no text
     reconstruction is needed. Must be emitted before the catch-all.
     """
+    if layout.log_descriptor is None:
+        raise DictionaryError("Packet-type enumeration has no FW_PACKET_LOG; the events packet cannot be identified")
     descriptor = _descriptor_item(layout)
     description = quote("F Prime event record (opaque; decoded by the fprime-gds event decoder)")
     lines = [f"TELEMETRY {TARGET} {EVENTS_PACKET} BIG_ENDIAN {description}"]

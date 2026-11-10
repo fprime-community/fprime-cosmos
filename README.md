@@ -184,8 +184,12 @@ newer (password-based `/openc3-api/auth/verify` and token authentication of the 
 installs there). Command arguments are flattened like the generator's parameters (structs
 to `NAME.MEMBER`, non-numeric arrays to `NAME[i]`, booleans and enums as state names). Events arrive through the
 generated `FPRIME_EVENTS` packet (the opaque F Prime event record, decoded by the fprime-gds event decoder, so event
-assertions see native events); files and data products are not modeled (a file uplink attempted through the
-transport fails at once with an error instead of waiting for a handshake); the cFS layout has no events packet yet. A COSMOS command
+assertions see native events). No event is delivered when the COSMOS target has no `FPRIME_EVENTS` packet — a plugin
+installed from an earlier `fprime-cosmos` (regenerate and reinstall it: run the launcher or `fprime-to-cosmos --install`),
+a dictionary without `FW_PACKET_LOG`, or `--cosmos-layout cfs` (the cFS generator has no events packet yet):
+`connect()` still succeeds, the transport logs a warning and event assertions time out. Files and data products are
+not modeled (a file uplink attempted through the transport fails at once with an error instead of waiting for a
+handshake). A COSMOS command
 rejection is raised to the caller (the test fails); a target without telemetry packets, a refused password or a
 rejected first subscription fails `connect()` at once; afterwards, after three
 consecutive subscription rejections (before or after COSMOS confirmed the subscription, a non-reconnectable
@@ -221,8 +225,8 @@ channel and packet identifier types, `FwSizeStoreType` string lengths, boolean e
   the plugin to stamp them with F Prime time instead (only meaningful for `TB_WORKSTATION_TIME`).
 - **Packetized telemetry** – one packet per entry of the selected `telemetryPacketSets` set.
 - `FPRIME_EVENTS` – the F Prime event record after its descriptor as one opaque `RECORD` block (decoded by the
-  `cosmos` data transport through fprime-gds; emitted only when the dictionary's packet-type enumeration defines
-  `FW_PACKET_LOG`).
+  `cosmos` data transport through fprime-gds; omitted only when the dictionary's packet-type enumeration
+  (`Fw.ComPacketType`, else `ComCfg.Apid`, else the built-in fallback) has no `FW_PACKET_LOG`).
 - `FPRIME_UNKNOWN` (last in `packets.txt`) catches packets the plugin does not model (files, data products).
 
 ## Development

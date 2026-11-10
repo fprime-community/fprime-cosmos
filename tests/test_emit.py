@@ -151,13 +151,14 @@ def test_events_packet_precedes_the_catch_all(reference_dictionary):
     assert "APPEND_ITEM RECORD 0 BLOCK" in block
 
 
-def test_packet_named_like_a_plugin_packet_is_refused(reference_dictionary):
+@pytest.mark.parametrize("name", ["fprime_events", "Fprime_Channels", "FPRIME_UNKNOWN"])
+def test_packet_named_like_a_plugin_packet_is_refused(reference_dictionary, name):
     from unittest.mock import MagicMock, PropertyMock, patch
 
     from fprime_gds.common.templates.pkt_template import PktTemplate
 
     fake = MagicMock(spec=PktTemplate)
-    fake.get_name.return_value = "fprime_events"
+    fake.get_name.return_value = name
     with (
         patch.object(type(reference_dictionary), "packets", new_callable=PropertyMock, return_value=[fake]),
         pytest.raises(DictionaryError, match="collides"),
@@ -174,3 +175,5 @@ def test_events_packet_is_skipped_without_a_log_descriptor(reference_dictionary)
     with patch.object(reference_dictionary, "layout", layout):
         text = emit.emit_packets(reference_dictionary)
     assert "FPRIME_EVENTS" not in text and text.rstrip().endswith('"Remaining packet bytes"')
+    with pytest.raises(DictionaryError, match="FW_PACKET_LOG"):
+        emit.emit_events_packet(layout)

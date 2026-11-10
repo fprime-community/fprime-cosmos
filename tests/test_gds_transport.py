@@ -683,8 +683,40 @@ class TestStreamDecoding:
             for _ in range(5):
                 client._on_packet({**packet, "RECORD": [0xFF, 0xFF, 0xFF, 0xFF, 1, 2, 3]})
             client._on_packet({**packet, "RECORD": "\x00\x00\x00\x01"})  # plain-text BLOCK form is accepted
-        assert caplog.text.count("Cannot decode F Prime event record") <= 2
+        assert caplog.text.count("Cannot decode or deliver F Prime event record") == 1  # one line per failure kind
+        for event_id in range(0x9000, 0x9005):  # remote-chosen ids must not grow the warn-once set
+            client._on_packet({**packet, "RECORD": list(event_id.to_bytes(4, "big")) + [0] * 11})
+        assert caplog.text.count("Cannot decode or deliver F Prime event record") == 1
+        assert len(client._failed_channels) == 1
+        with caplog.at_level(logging.WARNING, logger="cosmos_transport"):
+            client._on_packet({**packet, "RECORD": []})
+            client._on_packet({**packet, "RECORD": [1, 2, 3]})
+        assert caplog.text.count("no usable RECORD block") == 1  # sub-4-byte records never reach the decoder
         assert decoder.send_to_all.call_count == 0
+
+    def test_plain_text_record_block_is_decoded_as_utf8(self, dictionaries):
+        decoder = MagicMock()
+        client = CosmosTransport(cosmos_url="http://c", cosmos_target="FPRIME")
+        client.set_pipeline_references(dictionaries, MagicMock(), decoder)
+        client._index_channels()
+        packet = {"__packet": "DECOM__TLM__FPRIME__Fprime_Events__CONVERTED", "FPRIME_DESCRIPTOR": 2}
+        client._on_packet({**packet, "RECORD": "\x00\x00\x00\x01"})
+        client._on_packet({**packet, "RECORD": "\x00\x00\x00\x01\u00e9"})  # COSMOS re-read the bytes as UTF-8
+        assert [call.args[0] for call in decoder.data_callback.call_args_list] == [
+            b"\x00\x00\x00\x01",
+            b"\x00\x00\x00\x01\xc3\xa9",
+        ]
+        assert client.channel_decoder.send_to_all.call_count == 0
+
+    def test_event_packet_without_a_decoder_warns_once(self, dictionaries, caplog):
+        client = CosmosTransport(cosmos_url="http://c", cosmos_target="FPRIME")
+        client.set_pipeline_references(dictionaries, MagicMock(), None)
+        client._index_channels()
+        packet = {"__packet": "DECOM__TLM__FPRIME__FPRIME_EVENTS__CONVERTED", "FPRIME_DESCRIPTOR": 2, "RECORD": [1]}
+        with caplog.at_level(logging.WARNING, logger="cosmos_transport"):
+            client._on_packet(packet)
+            client._on_packet(packet)
+        assert caplog.text.count("no event decoder is attached") == 1
 
     def test_event_packet_error_paths_never_reach_the_channel_path(self, dictionaries, caplog):
         decoder = MagicMock()
@@ -692,32 +724,70 @@ class TestStreamDecoding:
         client = CosmosTransport(cosmos_url="http://c", cosmos_target="FPRIME")
         client.set_pipeline_references(dictionaries, MagicMock(), decoder)
         client._index_channels()
-        channel = next(iter(dictionaries.channel_id))
-        packet = {
-            "__packet": "DECOM__TLM__FPRIME__FPRIME_EVENTS__CONVERTED",
-            "FPRIME_DESCRIPTOR": 2,
-            "FPRIME_CHANNEL_ID": channel,
-        }
+        template = dictionaries.channel_name["CdhCore.cmdDisp.CommandErrors"]
+        packet = channel_packet(
+            "FPRIME_EVENTS", {"FPRIME_DESCRIPTOR": 2, "FPRIME_CHANNEL_ID": template.get_id(), "COMMANDERRORS": 2}
+        )
         with caplog.at_level(logging.WARNING, logger="cosmos_transport"):
-            for record in ([1, 2, 3], [1, 2, 3], 42, None, {"json_class": "String", "raw": 7}):
+            for record in ([1, 2, 3, 4], [1, 2, 3, 4], 42, None, {"json_class": "String", "raw": 7}):
                 client._on_packet({**packet, "RECORD": record} if record is not None else packet)
         assert decoder.data_callback.call_count == 2  # garbled records are handed over, the failure is survived
-        assert caplog.text.count("Cannot decode F Prime event record") == 1
+        assert caplog.text.count("Cannot decode or deliver F Prime event record") == 1
+        assert "RuntimeError: garbled" in caplog.text
         assert caplog.text.count("no usable RECORD block") == 1
-        assert client.channel_decoder.send_to_all.call_count == 0  # the channel id item on an event packet is ignored
+        # a complete, decodable channel item set rides on the event packet and must still not become a channel
+        assert client.channel_decoder.send_to_all.call_count == 0
+        assert "Cannot rebuild channel" not in caplog.text
 
     def test_dictionary_packet_named_like_a_plugin_packet_is_refused(self, dictionaries):
         from unittest.mock import PropertyMock
 
+        from fprime_gds.common.templates.pkt_template import PktTemplate
+
+        fake = MagicMock(spec=PktTemplate)
+        fake.get_name.return_value = "Fprime_Events"
         client = CosmosTransport(cosmos_url="http://c", cosmos_target="FPRIME")
         client.set_pipeline_references(dictionaries, MagicMock(), MagicMock())
         with (
             patch.object(
-                type(dictionaries), "packet_set_name", new_callable=PropertyMock, return_value={"Fprime_Events": 1}
+                type(dictionaries), "packet", new_callable=PropertyMock, return_value={**dictionaries.packet, 9: fake}
             ),
             pytest.raises(CosmosTransportError, match="collides"),
         ):
             client._index_channels()
+        client._index_channels()  # the unpatched reference dictionary has no reserved names
+
+    @pytest.mark.parametrize(
+        "layout, target, names",
+        [
+            ("fprime", "FPRIME", ["CDHCORE.CMDDISP.COMMANDERRORS", "FPRIME_UNKNOWN"]),
+            ("cfs", "FPRIME_APP", ["HEALTH", "CDHCORE.CMDDISP.COMMANDERRORS"]),
+        ],
+    )
+    def test_missing_events_packet_is_warned_for_both_layouts(
+        self, dictionaries, monkeypatch, caplog, layout, target, names
+    ):
+        monkeypatch.setenv(PASSWORD_ENV, "pw")
+        client = CosmosTransport(cosmos_url="http://c", cosmos_target=target, cosmos_layout=layout)
+        client.set_pipeline_references(dictionaries, MagicMock(), MagicMock())
+        fake_api = MagicMock()
+        fake_api.call.return_value = names
+        with (
+            patch.object(transport, "CosmosApi", return_value=fake_api),
+            patch.object(transport, "StreamingSocket"),
+            caplog.at_level(logging.WARNING, logger="cosmos_transport"),
+        ):
+            client.connect()
+        assert caplog.text.count("has no FPRIME_EVENTS packet; events are not delivered") == 1
+        fake_api.call.return_value = names + ["FPRIME_EVENTS"]
+        caplog.clear()
+        with (
+            patch.object(transport, "CosmosApi", return_value=fake_api),
+            patch.object(transport, "StreamingSocket"),
+            caplog.at_level(logging.WARNING, logger="cosmos_transport"),
+        ):
+            client.connect()
+        assert "events are not delivered" not in caplog.text
 
     def test_events_packet_is_subscribed_but_not_a_channel(self, client, monkeypatch):
         monkeypatch.setenv(PASSWORD_ENV, "pw")
@@ -730,6 +800,7 @@ class TestStreamDecoding:
             client.connect()
         assert "DECOM__TLM__FPRIME__FPRIME_EVENTS__CONVERTED" in s.call_args.args[3]
         assert "DECOM__TLM__FPRIME__FPRIME_UNKNOWN__CONVERTED" not in s.call_args.args[3]
+        assert "FPRIME_EVENTS" not in client._packet_channels and "FPRIME_EVENTS" not in client._channel_index
 
     def test_null_value_is_not_delivered(self, client, caplog):
         with caplog.at_level(logging.WARNING, logger="cosmos_transport"):
