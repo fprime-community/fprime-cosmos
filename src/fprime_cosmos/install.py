@@ -66,7 +66,10 @@ def parse_variables(pairs: list[str]) -> dict[str, str]:
 
 
 def installed_plugin_for_target(client: CosmosClient, target: str) -> str | None:
-    """The fprime plugin currently serving `target`, whichever dictionary it was generated from"""
+    """The plugin currently serving `target`: as COSMOS records it on the target, else the native plugin variable"""
+    model = client.target(target)
+    if model and model.get("plugin"):
+        return model["plugin"]
     for name in client.plugins():
         if not name.startswith(f"{GEM_NAME_PREFIX}-"):
             continue
