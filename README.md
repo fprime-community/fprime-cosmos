@@ -26,16 +26,13 @@ pip install "git+https://github.com/fprime-community/fprime-cosmos.git"
 ```
 
 This pulls in `fprime-gds`, which provides the dictionary loaders and `fprime-comm-bridge`. The bridge ships in
-`fprime-gds` 4.4.0a4 and later (pre-releases, selected automatically because the dependency floor names one); to use
-the development branch instead:
+`fprime-gds` 4.4.0a4 and later and the `data_transport` plugin category used by the `cosmos` GDS transport below in
+4.4.2a1 and later (pre-releases, selected automatically because the dependency floor names one); to use the
+development branch instead:
 
 ```bash
 pip install "git+https://github.com/nasa/fprime-gds.git@devel"
 ```
-
-Neither a release nor `devel` carries the `data_transport` plugin category yet; the `cosmos` GDS transport below needs
-[nasa/fprime-gds#386](https://github.com/nasa/fprime-gds/pull/386) (install: see that section). The launcher and
-generator do not need it.
 
 Prefer `$OPENC3_API_PASSWORD` over `--cosmos-password`; command-line arguments are visible to other users of the
 machine. The default `--cosmos-url` is plain HTTP on `localhost`; use an `https://` URL for a remote COSMOS.
@@ -143,8 +140,10 @@ serves upgrades that plugin in place (COSMOS forbids two plugins defining the sa
 `fprime-cosmos` also ships a [fprime-gds `data-transport` plugin](https://github.com/nasa/fprime-gds/pull/386) named
 `cosmos`, so the GDS Integration Test API (and any other `fprime-gds` pipeline user) can talk to the deployment
 *through COSMOS* instead of the GDS comm layer. Commands go to the COSMOS cmd-tlm-api as structured JSON-RPC
-`cmd_no_hazardous_check` calls (target, command name, `{PARAMETER: value}`; the hazardous-command confirmation is
-bypassed because nobody is there to confirm it). Telemetry comes back from the COSMOS streaming websocket
+`cmd` calls (target, command name, `{PARAMETER: value}`). COSMOS refuses a command marked `HAZARDOUS` that way, since
+nobody is there to confirm it; `--cosmos-plugin-allow-hazardous-commands` sends it unconfirmed with
+`cmd_no_hazardous_check` (this generator marks no command `HAZARDOUS`, so this only matters for a hand-edited or
+cFS-generated plugin). Telemetry comes back from the COSMOS streaming websocket
 (`/openc3-api/cable`, DECOM CONVERTED values): `FPRIME_EVENTS` goes to the event decoder (below); a packet carrying `FPRIME_CHANNEL_ID` is resolved by channel id,
 otherwise a packet named after a dictionary channel (this generator's dedicated packets) by its name, any other
 packet by the channel names its items spell, and the value is reassembled from the items the generator
@@ -163,21 +162,15 @@ pytest test/int --dictionary <dictionary>.json \
 | --- | --- |
 | `--data-transport-selection cosmos` | select the COSMOS transport (default is the GDS ZeroMQ transport) |
 | `--cosmos-url` | cmd-tlm-api URL, `http://localhost:2900` by default; `https://` is honored (and recommended for a remote COSMOS: over plain `http://` the password and session token travel in clear text, which the transport warns about for non-loopback hosts) |
-| `--cosmos-scope` | COSMOS scope, `DEFAULT` |
+| `--cosmos-scope` | COSMOS scope, `DEFAULT` (letters, digits, `_` and `-`, like `--cosmos-target`) |
 | `--cosmos-target` | COSMOS target of the deployment: the launcher's/generator's `--target-name` (default `FPRIME` in both) or the `fprime_target_name` plugin variable when it was overridden; with `--cosmos-layout cfs` the target name given to the cFS generator, e.g. `FPRIME_APP` |
+| `--cosmos-plugin-allow-hazardous-commands` | send commands COSMOS marks `HAZARDOUS` without confirmation; refused by default |
 | `--cosmos-layout` | `fprime` (this generator: per-channel packets named after the channel, subscribed selectively) or `cfs` (*experimental*: one-app-one-target cFS generator — every packet of the target is subscribed; per-channel packets carry the channel leaf item as here and are resolved by their `FPRIME_CHANNEL_ID` item only, packet-set packets such as `HEALTH` carry the upper-cased dotted names such as `CFSCORE.CMDDISP.COMMANDSDISPATCHED`; checked against that generator's source by unit tests only, not live) |
 
-Requires an `fprime-gds` with the `data_transport` plugin category (`--data-transport-selection`;
-[nasa/fprime-gds#386](https://github.com/nasa/fprime-gds/pull/386), not in a release or on `devel` at the time of
-writing):
-
-```bash
-# nasa/fprime-gds#386 at the commit this transport was tested against; replace with a release once one contains #386
-pip install "fprime-gds @ git+https://github.com/nasa/fprime-gds.git@d190fcb6d928a099d4f67e62ba5479b5e3073ad6"
-```
-
-On an fprime-gds without the category the entry point is loaded and ignored and `--data-transport-selection` does not
-exist. The transport is tested against COSMOS 7.5.1 (JSON-RPC `cmd_no_hazardous_check` with structured parameters,
+Requires `fprime-gds` 4.4.2a1 or newer, the first release with the `data_transport` plugin category
+(`--data-transport-selection`; [nasa/fprime-gds#386](https://github.com/nasa/fprime-gds/pull/386)); installing
+`fprime-cosmos` pulls it in. A command COSMOS rejects raises in the caller, but fprime-gds has already recorded it in
+the command history by then (the GDS notifies its histories before the transport). The transport is tested against COSMOS 7.5.1 (JSON-RPC `cmd_no_hazardous_check` with structured parameters; `cmd`, the default, takes the same arguments but was not run live,
 `/openc3-api/auth/verify` session tokens, the ActionCable `StreamingChannel` frame shape) and needs COSMOS 7.2.0 or
 newer (password-based `/openc3-api/auth/verify` and token authentication of the `StreamingChannel` subscription;
 6.10.x-7.1.x authenticate differently and are not supported by the transport, although the generated plugin itself
@@ -248,7 +241,7 @@ python tests/update_golden.py   # after intentional emitter changes
 ```
 
 The plugin-discovery and GDS command-line tests in `tests/test_gds_transport.py` skip unless an `fprime-gds` with the
-`data_transport` category (nasa/fprime-gds#386) is installed.
+`data_transport` category (4.4.2a1 or newer) is installed.
 
 ## Attribution
 

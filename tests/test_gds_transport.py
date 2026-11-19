@@ -157,7 +157,7 @@ class TestPluginContract:
         assert CosmosTransport.get_name() == "cosmos"
         assert CosmosTransport.register_data_transport_plugin() is CosmosTransport
         dests = {spec["dest"] for spec in CosmosTransport.get_arguments().values()}
-        assert dests == {"cosmos_url", "cosmos_scope", "cosmos_target", "cosmos_layout"}
+        assert dests == {"cosmos_url", "cosmos_scope", "cosmos_target", "cosmos_layout", "cosmos_allow_hazardous"}
         assert "password" not in " ".join(dests)
         assert CosmosTransport.get_connection_uri(cosmos_url="http://host:2900") == "cosmos://host:2900"
         assert CosmosTransport.get_connection_uri(cosmos_url="host:2900") == "cosmos://host:2900"
@@ -174,6 +174,8 @@ class TestPluginContract:
             ({"cosmos_layout": "yamcs"}, "--cosmos-layout"),
             ({"cosmos_target": ""}, "must not be empty"),
             ({"cosmos_scope": ""}, "must not be empty"),
+            ({"cosmos_scope": "A&token=x b"}, "--cosmos-scope must be a COSMOS name"),
+            ({"cosmos_target": "FPRIME__X y"}, "--cosmos-target must be a COSMOS name"),
         ],
     )
     def test_check_arguments_rejects_bad_input(self, kwargs, message):
@@ -217,7 +219,7 @@ class TestCommands:
         client.api = MagicMock()
         client.data_callback(CmdData(("it's \\ quoted",), template))
         client.api.call.assert_called_once_with(
-            "cmd_no_hazardous_check", "FPRIME", "CdhCore.cmdDisp.CMD_NO_OP_STRING", {"ARG1": "it's \\ quoted"}
+            "cmd", "FPRIME", "CdhCore.cmdDisp.CMD_NO_OP_STRING", {"ARG1": "it's \\ quoted"}
         )
         client.send(b"\x00\x01")  # encoded bytes from the pipeline are not routed anywhere
         assert client.recv() == b""
@@ -225,7 +227,7 @@ class TestCommands:
     def test_issue_command_without_arguments(self, client, dictionaries):
         client.api = MagicMock()
         client.data_callback(CmdData((), dictionaries.command_name["CdhCore.cmdDisp.CMD_NO_OP"]))
-        client.api.call.assert_called_once_with("cmd_no_hazardous_check", "FPRIME", "CdhCore.cmdDisp.CMD_NO_OP", {})
+        client.api.call.assert_called_once_with("cmd", "FPRIME", "CdhCore.cmdDisp.CMD_NO_OP", {})
 
     def test_typed_arguments_are_unwrapped_and_paired_by_name(self, client, dictionaries):
         client.api = MagicMock()
@@ -239,19 +241,19 @@ class TestCommands:
         calls = [call.args for call in client.api.call.call_args_list]
         assert calls == [
             (
-                "cmd_no_hazardous_check",
+                "cmd",
                 "FPRIME",
                 "CdhCore.cmdDisp.CMD_TEST_CMD_1",
                 {"ARG1": -1, "ARG2": 2.5, "ARG3": 7},
             ),
             (
-                "cmd_no_hazardous_check",
+                "cmd",
                 "FPRIME",
                 "CdhCore.events.SET_EVENT_FILTER",
                 {"FILTERLEVEL": "WARNING_LO", "FILTERENABLED": "DISABLED"},
             ),
             (
-                "cmd_no_hazardous_check",
+                "cmd",
                 "FPRIME",
                 "FileHandling.fileManager.RemoveFile",
                 {"FILENAME": "/tmp/x", "IGNOREERRORS": "FALSE"},
@@ -265,7 +267,51 @@ class TestCommands:
         client.data_callback(b"\x01\x02")  # the encoder's echo of that command: accepted silently
         with pytest.raises(CosmosTransportError, match="not carried by the COSMOS transport"):
             client.data_callback(b"\x03")  # a file-uplink packet: the uplinker must not wait for a handshake
-        assert client._pending_commands == 0
+        assert client._pending_commands == {}
+
+    def test_hazardous_commands_are_sent_unchecked_only_when_allowed(self, dictionaries):
+        client = CosmosTransport(cosmos_url="http://cosmos:2900", cosmos_allow_hazardous=True)
+        client.set_pipeline_references(dictionaries, MagicMock(), MagicMock())
+        client.api = MagicMock()
+        client.data_callback(CmdData((), dictionaries.command_name["CdhCore.cmdDisp.CMD_NO_OP"]))
+        client.api.call.assert_called_once_with("cmd_no_hazardous_check", "FPRIME", "CdhCore.cmdDisp.CMD_NO_OP", {})
+        assert CosmosTransport(cosmos_url="http://cosmos:2900").command_method == "cmd"
+
+    def test_cable_url_percent_encodes_the_scope(self):
+        api = transport.CosmosApi("http://cosmos:2900", "A&token=x b", None)
+        assert api.cable_url() == "ws://cosmos:2900/openc3-api/cable?scope=A%26token%3Dx%20b"
+
+    def test_command_echo_is_paired_per_thread(self, client, dictionaries):
+        import threading
+
+        client.api = MagicMock()
+        client.data_callback(CmdData((), dictionaries.command_name["CdhCore.cmdDisp.CMD_NO_OP"]))
+        errors = []
+
+        def uplink():  # another thread's file packet must not be taken for this thread's pending echo
+            try:
+                client.data_callback(b"\x03")
+            except CosmosTransportError as error:
+                errors.append(error)
+
+        thread = threading.Thread(target=uplink)
+        thread.start()
+        thread.join()
+        assert len(errors) == 1
+        client.data_callback(b"\x01\x02")  # the echo is still accepted on the issuing thread
+        assert client._pending_commands == {}
+
+    def test_disconnect_forgets_pending_echoes(self, client, dictionaries):
+        client.api = MagicMock()
+        client.data_callback(CmdData((), dictionaries.command_name["CdhCore.cmdDisp.CMD_NO_OP"]))
+        client.disconnect()
+        assert client._pending_commands == {}
+
+    def test_warn_once_keys_are_bounded(self, client):
+        assert client._first_time("a") and not client._first_time("a")
+        client._failed_channels.update(str(index) for index in range(transport.MAX_WARN_ONCE_KEYS))
+        assert not client._first_time("b")
+        assert len(client._failed_channels) == transport.MAX_WARN_ONCE_KEYS + 1
 
     def test_struct_and_array_arguments_are_flattened_like_the_generator(self):
         from fprime_gds.common.models.serialize.array_type import ArrayType
@@ -324,9 +370,7 @@ class TestCommands:
         template = CmdTemplate(0x77, "SET_PAIR", "Comp", [("pair", "", pair)])
         client.api = MagicMock()
         client.data_callback(CmdData(('{"count": 2, "name": "ab"}',), template))
-        client.api.call.assert_called_once_with(
-            "cmd_no_hazardous_check", "FPRIME", "Comp.SET_PAIR", {"PAIR.COUNT": 2, "PAIR.NAME": "ab"}
-        )
+        client.api.call.assert_called_once_with("cmd", "FPRIME", "Comp.SET_PAIR", {"PAIR.COUNT": 2, "PAIR.NAME": "ab"})
 
     def test_every_dictionary_command_matches_the_generated_parameters(self, client, dictionaries):
         layout = FprimeDictionary(REFERENCE_DICTIONARY).layout
@@ -342,7 +386,6 @@ class TestCommands:
             assert set(sent) == emitted, template.get_full_name()
 
     def test_non_command_data_goes_to_the_base_transport(self, client):
-        client._pending_commands = 0
         with patch.object(client, "send") as send:
             client.data_callback(b"\x01\x02")
         send.assert_called_once_with(b"\x01\x02")

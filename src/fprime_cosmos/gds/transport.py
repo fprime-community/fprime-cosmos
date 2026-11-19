@@ -1,8 +1,9 @@
 """fprime-gds ``data-transport`` plugin that talks to OpenC3 COSMOS instead of an F Prime comm layer
 
 Architecture: deployment -> COSMOS (its own interface / the fprime-cosmos bridge) -> this transport -> GDS pipeline.
-Commands are issued through the COSMOS JSON-RPC API with ``cmd_no_hazardous_check`` (structured parameters; the
-hazardous-command confirmation step is bypassed because nobody is there to confirm it). Telemetry is received through
+Commands are issued through the COSMOS JSON-RPC API with ``cmd`` (structured parameters), so COSMOS refuses a command
+marked HAZARDOUS: nobody is there to confirm it. ``--cosmos-plugin-allow-hazardous-commands`` selects
+``cmd_no_hazardous_check`` instead, which sends such a command without the confirmation. Telemetry is received through
 the cmd-tlm-api streaming websocket (ActionCable ``StreamingChannel``, DECOM CONVERTED values) and rebuilt into GDS
 channel data: a packet carrying the generator's ``FPRIME_CHANNEL_ID`` item is resolved by channel id, a packet named
 after a dictionary channel by its name, any other packet by the channel names its items spell (``CosmosNaming``), and
@@ -26,7 +27,7 @@ import threading
 import time
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import requests
 from fprime_gds.common.data_types.ch_data import ChData
@@ -61,6 +62,8 @@ from fprime_cosmos.items import BOOL_STATES
 LOGGER = logging.getLogger("cosmos_transport")
 # distinct event-record failure causes warned about as they happen; further causes are only counted
 MAX_WARNED_EVENT_FAILURES = 16
+# distinct warn-once keys (channels, unknown ids, time bases, packet names) remembered; past it nothing new is warned
+MAX_WARN_ONCE_KEYS = 1024
 
 COSMOS_URI_SCHEME = "cosmos://"
 COSMOS_SECURE_URI_SCHEME = "cosmos+https://"
@@ -76,7 +79,8 @@ AUTH_PATH = "/openc3-api/auth"
 CABLE_PATH = "/openc3-api/cable"
 CABLE_PROTOCOLS = "actioncable-v1-json, actioncable-unsupported"
 STREAMING_CHANNEL = "StreamingChannel"
-COMMAND_METHOD = "cmd_no_hazardous_check"
+COMMAND_METHOD = "cmd"  # COSMOS refuses a HAZARDOUS command (HazardousError)
+UNCHECKED_COMMAND_METHOD = "cmd_no_hazardous_check"
 #: Items COSMOS derives on every packet (they never carry an F Prime channel value)
 COSMOS_DERIVED_ITEMS = frozenset(
     {"RECEIVED_TIMESECONDS", "RECEIVED_TIMEFORMATTED", "RECEIVED_COUNT", "PACKET_TIMESECONDS", "PACKET_TIMEFORMATTED"}
@@ -93,6 +97,7 @@ MAX_AUTH_FAILURES = 3
 STREAM_JOIN_TIMEOUT_SECONDS = 5.0
 #: ActionCable pings every 3 s; a socket silent for longer than this is treated as half-open and reconnected
 STREAM_IDLE_TIMEOUT_SECONDS = 15.0
+NAME_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
 SOCKET_READ_TIMEOUT_SECONDS = 1.0
 CONNECT_TIMEOUT_SECONDS = 10.0
 SUBSCRIBE_TIMEOUT_SECONDS = 10.0
@@ -286,7 +291,7 @@ class CosmosApi:
 
     def cable_url(self) -> str:
         scheme = "wss" if self.url.startswith("https://") else "ws"
-        return f"{scheme}://{self.url.split('://', 1)[1]}{CABLE_PATH}?scope={self.scope}"
+        return f"{scheme}://{self.url.split('://', 1)[1]}{CABLE_PATH}?scope={quote(self.scope, safe='')}"
 
 
 class StreamingSocket:
@@ -463,7 +468,7 @@ class StreamingSocket:
                 self.callback(packet)
             except Exception as exc:
                 name = str(packet.get("__packet")) if isinstance(packet, dict) else type(packet).__name__
-                if name not in self._dropped:
+                if name not in self._dropped and len(self._dropped) < MAX_WARN_ONCE_KEYS:
                     self._dropped.add(name)
                     LOGGER.warning("Dropped COSMOS packet %s (further drops of it are silent): %s", name, exc)
         return True
@@ -514,7 +519,12 @@ class CosmosTransport(TransportClient):
     """``cosmos`` data transport: GDS pipeline <-> COSMOS cmd-tlm-api"""
 
     def __init__(
-        self, cosmos_url=None, cosmos_scope=DEFAULT_SCOPE, cosmos_target=DEFAULT_TARGET, cosmos_layout="fprime"
+        self,
+        cosmos_url=None,
+        cosmos_scope=DEFAULT_SCOPE,
+        cosmos_target=DEFAULT_TARGET,
+        cosmos_layout="fprime",
+        cosmos_allow_hazardous=False,
     ):
         super().__init__()
         self.default_uri = self.get_connection_uri(cosmos_url=cosmos_url or DEFAULT_URL)
@@ -532,7 +542,11 @@ class CosmosTransport(TransportClient):
         self._event_id_bytes = 4
         self._warned_event_failures: set[str] = set()
         self._suppressed_event_failures: dict[str, int] = {}
-        self._pending_commands = 0
+        self.command_method = UNCHECKED_COMMAND_METHOD if cosmos_allow_hazardous else COMMAND_METHOD
+        # commands issued whose encoded echo has not reached send() yet, per sending thread: fprime-gds encodes and
+        # sends on the thread that issued the command, so another thread's packet is never taken for the echo
+        self._pending_commands: dict[int, int] = {}
+        self._pending_lock = threading.Lock()
 
     # ---- plugin contract -------------------------------------------------------------------------------------------
     @classmethod
@@ -567,6 +581,12 @@ class CosmosTransport(TransportClient):
                 "default": "fprime",
                 "help": "COSMOS plugin naming layout: fprime (fprime-cosmos generator) or cfs (one-app-one-target)",
             },
+            ("--cosmos-plugin-allow-hazardous-commands",): {
+                "dest": "cosmos_allow_hazardous",
+                "action": "store_true",
+                "default": False,
+                "help": "Send commands COSMOS marks HAZARDOUS without confirmation (refused by default)",
+            },
         }
 
     @classmethod
@@ -583,6 +603,9 @@ class CosmosTransport(TransportClient):
             raise ValueError(f"--cosmos-layout must be one of {LAYOUTS}")
         if not cosmos_target or not cosmos_scope:
             raise ValueError("--cosmos-target and --cosmos-scope must not be empty")
+        for flag, value in (("--cosmos-target", cosmos_target), ("--cosmos-scope", cosmos_scope)):
+            if not NAME_PATTERN.fullmatch(value):
+                raise ValueError(f"{flag} must be a COSMOS name (letters, digits, '_' or '-'), got: {value!r}")
 
     @staticmethod
     def _check_url(cosmos_url: str):
@@ -689,16 +712,32 @@ class CosmosTransport(TransportClient):
         # the stream thread is joined (or gave up after STREAM_JOIN_TIMEOUT_SECONDS, in which case the counts may
         # miss stragglers): swap the counters out before reporting them so a late write cannot break the iteration
         suppressed, self._suppressed_event_failures = self._suppressed_event_failures, {}
+        with self._pending_lock:
+            self._pending_commands.clear()
         for key, count in suppressed.items():
             LOGGER.warning(
                 "%d F Prime event record(s) from COSMOS dropped%s: %s", count, "" if stopped else " (at least)", key
             )
 
+    def _first_time(self, key: str) -> bool:
+        """True the first time a warn-once key is seen; never again once ``MAX_WARN_ONCE_KEYS`` keys are remembered
+        (the keys come from COSMOS data, so the set must stay bounded)"""
+        if key in self._failed_channels or len(self._failed_channels) >= MAX_WARN_ONCE_KEYS:
+            return False
+        self._failed_channels.add(key)
+        return True
+
     def send(self, data):
         """Encoded GDS packets: the echo of a command just issued through the cmd API is expected, anything else
         (file uplink, raw packets) has no COSMOS path and fails the caller rather than stalling it"""
-        if self._pending_commands > 0:
-            self._pending_commands -= 1
+        thread = threading.get_ident()
+        with self._pending_lock:
+            pending = self._pending_commands.get(thread, 0)
+            if pending > 1:
+                self._pending_commands[thread] = pending - 1
+            elif pending == 1:
+                del self._pending_commands[thread]
+        if pending > 0:
             return
         raise CosmosTransportError(
             "Binary GDS packets (file uplink, raw packets) are not carried by the COSMOS transport"
@@ -712,7 +751,9 @@ class CosmosTransport(TransportClient):
             if self.stream is not None and self.stream.failure is not None:
                 raise CosmosTransportError(f"COSMOS telemetry stream gave up: {self.stream.failure}")
             self._issue_command(data)
-            self._pending_commands += 1
+            thread = threading.get_ident()
+            with self._pending_lock:
+                self._pending_commands[thread] = self._pending_commands.get(thread, 0) + 1
             return
         super().data_callback(data, sender)
 
@@ -730,7 +771,7 @@ class CosmosTransport(TransportClient):
         if self.api is None:
             raise CosmosTransportError(f"Cannot issue {name}: not connected to COSMOS")
         try:
-            self.api.call(COMMAND_METHOD, self.target, name, parameters)
+            self.api.call(self.command_method, self.target, name, parameters)
         except CosmosTransportError as exc:
             LOGGER.error("Command %s %s %s failed: %s", self.target, name, parameters, exc)
             raise
@@ -819,10 +860,9 @@ class CosmosTransport(TransportClient):
         else:
             key = None
         if key is not None:
-            if key in self._failed_channels:
+            if not self._first_time(key):
                 self._suppressed_event_failures[cause] = self._suppressed_event_failures.get(cause, 0) + 1
             else:
-                self._failed_channels.add(key)
                 LOGGER.warning(
                     "COSMOS %s packet dropped (repeats are counted and reported at disconnect): %s",
                     EVENTS_PACKET,
@@ -857,8 +897,7 @@ class CosmosTransport(TransportClient):
             template = (getattr(self.dictionaries, "channel_id", None) or {}).get(int(channel_id))
             if template is None:
                 key = f"{packet_name}:{channel_id}"
-                if key not in self._failed_channels:
-                    self._failed_channels.add(key)
+                if self._first_time(key):
                     LOGGER.warning("COSMOS packet %s carries unknown F Prime channel id %s", packet_name, channel_id)
                 return []
             return [(template, self._dedicated_root(template, items))]
@@ -911,8 +950,7 @@ class CosmosTransport(TransportClient):
                     assemble_value(items, root, template.get_type_obj()), template.get_type_obj()
                 )
             except Exception as exc:
-                if template.get_full_name() not in self._failed_channels:
-                    self._failed_channels.add(template.get_full_name())
+                if self._first_time(template.get_full_name()):
                     LOGGER.warning(
                         "Cannot rebuild channel %s from COSMOS packet %s: %s",
                         template.get_full_name(),
@@ -944,8 +982,7 @@ class CosmosTransport(TransportClient):
                     TimeType(time_base=time_base)  # validates the base alone
                 except Exception as exc:
                     key = f"time base {base!r}"
-                    if key not in self._failed_channels:
-                        self._failed_channels.add(key)
+                    if self._first_time(key):
                         LOGGER.warning(
                             "F Prime time base %r is not in the loaded dictionary (%s); using the COSMOS receive time",
                             base,
@@ -1065,6 +1102,8 @@ def coerce_scalar(value: Any, type_class: type) -> Any:
             if word in BOOL_FALSE_WORDS:
                 return False
             raise ValueError(f"{value!r} is not a boolean")
+        if not isinstance(value, (bool, int, float)):
+            raise TypeError(f"{type(value).__name__} is not a boolean")
         return bool(value)
     if issubclass(type_class, EnumType):
         if isinstance(value, str):
